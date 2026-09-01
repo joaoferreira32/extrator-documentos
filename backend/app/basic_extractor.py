@@ -39,25 +39,31 @@ LINHA_DIGITAVEL_RE = re.compile(
 
 # Fallback quando nenhum rotulo de numero de documento e encontrado.
 # Exige pelo menos 4 digitos para nao pegar numeros soltos curtos (ex: "02").
-NUM_DOCUMENTO_RE = re.compile(
-    r"(?:N[º°o.]{1,3}|N[uú]mero)\s*[:\-]?\s*(\d{4,}[\w\-./]*)", re.IGNORECASE
-)
+# Propositalmente so as formas abreviadas (N./Nº/N°) -- a palavra por
+# extenso "Número" tambem aparece dentro de "Nosso Número", e usa-la aqui
+# recontaminava numero_documento com o valor do Nosso Número.
+NUM_DOCUMENTO_RE = re.compile(r"N[º°o.]{1,3}\s*[:\-]?\s*(\d{4,}[\w\-./]*)", re.IGNORECASE)
 
 ROTULOS_EMISSOR = ["Beneficiário", "Beneficiario", "Cedente", "Emitente", "Fornecedor"]
 ROTULOS_DESTINATARIO = ["Sacado", "Pagador", "Destinatário", "Destinatario", "Cliente"]
 ROTULOS_NUMERO_DOCUMENTO = [
-    "Nosso Número",
-    "Nosso Numero",
-    "Número do documento",
-    "Numero do documento",
     "Nr do documento",
     "Nr. do documento",
     "Nº do documento",
+    "Número do documento",
+    "Numero do documento",
     "Pedido de Compra Nº",
     "Pedido de Compra N.",
-    "Número",
-    "Numero",
 ]
+# Propositalmente SEM "Número"/"Numero" soltos aqui: sao ambiguos demais
+# (batem em "Número do Banco", "Nosso Número" e qualquer outro campo que
+# mencione a palavra) e ja causaram contaminacao cruzada com Nosso
+# Número. O fallback por regex (NUM_DOCUMENTO_RE) cobre o resto do texto
+# quando nenhum rotulo especifico aparece.
+# "Nosso Número" e um identificador BANCARIO (atribuido pelo banco pra
+# controle interno), diferente do numero do documento em si -- por isso
+# tem lista propria e vai pra campos_adicionais, nao para numero_documento.
+ROTULOS_NOSSO_NUMERO = ["Nosso Número", "Nosso Numero"]
 ROTULOS_DATA_EMISSAO = ["Data de Emissão", "Data de Emissao", "Emissão", "Emissao"]
 ROTULOS_VENCIMENTO = ["Vencimento"]
 ROTULOS_VALOR_DOCUMENTO = ["Valor Documento", "Valor do Documento"]
@@ -75,6 +81,7 @@ TODOS_ROTULOS = (
     ROTULOS_EMISSOR
     + ROTULOS_DESTINATARIO
     + ROTULOS_NUMERO_DOCUMENTO
+    + ROTULOS_NOSSO_NUMERO
     + ROTULOS_DATA_EMISSAO
     + ROTULOS_VENCIMENTO
     + ROTULOS_VALOR_DOCUMENTO
@@ -216,11 +223,32 @@ def _parece_rotulo(linha: str) -> bool:
     return any(normalizado == rotulo.lower() for rotulo in TODOS_ROTULOS)
 
 
+# Trechos de cabecalho/rodape de boleto que tem letras (entao passariam
+# num teste "so tem letra") mas claramente nao sao um nome de pessoa/
+# empresa. "Recibo do Sacado" e um TITULO DE SECAO que contem a palavra
+# "Sacado" -- o rotulo bate nele antes de bater no campo de verdade, e o
+# rodape "Pág: 1 de 1" que costuma vir logo depois tem letra o suficiente
+# pra passar despercebido sem esse bloqueio.
+MARCADORES_CABECALHO_RODAPE = [
+    "pág",
+    "pag:",
+    "página",
+    "pagina",
+    "recibo do sacado",
+    "ficha de compensação",
+    "ficha de compensacao",
+]
+
+
 def _parece_nome(valor: str) -> bool:
-    """Rejeita candidatos que sao so digitos/pontuacao/espaco -- carimbos de
-    data/hora, numeros soltos, etc. Um nome de pessoa ou empresa sempre tem
-    pelo menos uma letra."""
-    return any(ch.isalpha() for ch in valor)
+    """Rejeita candidatos que sao so digitos/pontuacao/espaco (carimbos de
+    data/hora, numeros soltos) ou que batem em marcadores conhecidos de
+    cabecalho/rodape de boleto. Um nome de pessoa ou empresa sempre tem
+    pelo menos uma letra E nao e um desses marcadores."""
+    if not any(ch.isalpha() for ch in valor):
+        return False
+    valor_lower = valor.lower()
+    return not any(marcador in valor_lower for marcador in MARCADORES_CABECALHO_RODAPE)
 
 
 def _parece_data(valor: str) -> bool:
@@ -333,24 +361,32 @@ def _parece_numero(valor: str) -> bool:
     return _contar_digitos(primeiro_token) >= 1
 
 
+def _extrair_valor_numerico_por_rotulo(linhas: list[str], rotulos: list[str]) -> Optional[str]:
+    """Busca um rotulo e devolve o numero associado. Confiamos no valor
+    mesmo com poucos digitos -- o rotulo ja e a garantia de que nao e um
+    numero solto (o validador so confirma que ha ALGUM digito; se um
+    rotulo bater em algo sem digito nenhum, a busca continua para o
+    proximo rotulo da lista em vez de desistir). Trata o formato
+    "XX / YYYYY" (prefixo de carteira / numero real, comum em "Nosso
+    Número"), usando a parte depois da barra."""
+    encontrado = _localizar_rotulo(linhas, rotulos, validador=_parece_numero)
+    if not encontrado:
+        return None
+    _, bruto = encontrado
+    m_barra = NUMERO_COM_BARRA_RE.match(bruto)
+    if m_barra:
+        return m_barra.group(2)
+    partes = bruto.split()
+    return partes[0].strip(".:-") if partes else None
+
+
 def _extrair_numero_documento(linhas: list[str], texto: str) -> Optional[str]:
-    # Vindo de um rotulo conhecido (ex: "Nosso Número:"), confiamos no
-    # valor mesmo com poucos digitos -- o rotulo ja e a garantia de que
-    # nao e um numero solto. Sem rotulo, exigimos pelo menos 4 digitos
-    # (e o que evita pegar pedacos curtos soltos, tipo "02", em qualquer
-    # lugar do texto). O validador aqui so confirma que ha algum digito;
-    # se um rotulo bater em algo sem digito nenhum, a busca continua para
-    # o proximo rotulo da lista em vez de desistir.
-    encontrado = _localizar_rotulo(linhas, ROTULOS_NUMERO_DOCUMENTO, validador=_parece_numero)
-    if encontrado:
-        _, bruto = encontrado
-        # "Nosso Número: 02 / 10200000001-9" -- os digitos antes da barra
-        # sao so um prefixo/carteira; o numero de verdade vem depois dela.
-        m_barra = NUMERO_COM_BARRA_RE.match(bruto)
-        if m_barra:
-            return m_barra.group(2)
-        partes = bruto.split()
-        return partes[0].strip(".:-") if partes else None
+    # Sem rotulo conhecido, exige pelo menos 4 digitos no fallback por
+    # regex solto -- e o que evita pegar pedacos curtos soltos (tipo "02")
+    # em qualquer lugar do texto.
+    valor = _extrair_valor_numerico_por_rotulo(linhas, ROTULOS_NUMERO_DOCUMENTO)
+    if valor:
+        return valor
 
     m = NUM_DOCUMENTO_RE.search(texto)
     return m.group(1) if m else None
@@ -367,6 +403,10 @@ def extrair(texto: str) -> DocumentoExtraido:
     linha_dig = _linha_digitavel(texto)
     if linha_dig:
         campos_adicionais.append(CampoAdicional(campo="Linha digitável", valor=linha_dig))
+
+    nosso_numero = _extrair_valor_numerico_por_rotulo(linhas, ROTULOS_NOSSO_NUMERO)
+    if nosso_numero:
+        campos_adicionais.append(CampoAdicional(campo="Nosso Número", valor=nosso_numero))
 
     valor_documento = _extrair_valor_rotulo(texto, ROTULOS_VALOR_DOCUMENTO)
     if valor_documento:

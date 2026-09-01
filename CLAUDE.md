@@ -42,34 +42,50 @@ A IA é um **upgrade opcional**, não um requisito de funcionamento:
   virando "02", pedaço de outro campo). Reconhece boleto bancário, nota
   fiscal e pedido de compra por palavra-chave; identifica CNPJ/CPF por
   formato e associa ao emissor/destinatário mais próximo; para boleto,
-  também captura linha digitável, parcela, agência/código do beneficiário
-  e os três valores (documento, desconto, valor a pagar) em
-  `campos_adicionais`; `valor_total` prioriza "Valor a Pagar" quando existe.
-  `itens` normalmente fica vazio nesse modo — reconstruir tabelas de itens
-  por regex não é confiável. Essa é uma limitação conhecida do MVP, não um
-  bug.
+  também captura linha digitável, "Nosso Número", parcela, agência/código
+  do beneficiário e os três valores (documento, desconto, valor a pagar)
+  em `campos_adicionais`; `valor_total` prioriza "Valor a Pagar" quando
+  existe. `itens` normalmente fica vazio nesse modo — reconstruir tabelas
+  de itens por regex não é confiável. Essa é uma limitação conhecida do
+  MVP, não um bug.
   - `data_emissao` e `data_vencimento` são campos separados — nunca se
     misturam porque cada um busca por um rótulo diferente
     (`ROTULOS_DATA_EMISSAO` vs `ROTULOS_VENCIMENTO`) e ambos exigem que o
     candidato tenha uma data reconhecível (`_parece_data`) antes de aceitar.
-  - Regra de negócio importante: `numero_documento` só aceita valores
-    curtos/poucos dígitos quando vêm de um rótulo conhecido (confiável);
-    sem rótulo, o fallback por regex solto exige no mínimo 4 dígitos — é
-    o que evita recapturar o bug do "02".
+  - `numero_documento` (rótulos `Nr do documento`/`Número do documento`)
+    e "Nosso Número" (`campos_adicionais`) são campos DIFERENTES de
+    propósito — o segundo é um identificador bancário interno, não o
+    número do documento. Listas de rótulos separadas
+    (`ROTULOS_NUMERO_DOCUMENTO` vs `ROTULOS_NOSSO_NUMERO`); mistura-los foi
+    um bug real. Nenhuma das duas listas inclui o rótulo genérico solto
+    "Número"/"Numero" — ele bate como substring dentro de "**Nosso**
+    Número" (e de qualquer outro campo que mencione a palavra), o que já
+    contaminou os dois campos; o fallback por regex (`NUM_DOCUMENTO_RE`)
+    também teve a variante "Número" removida pelo mesmo motivo, mantendo só
+    as formas abreviadas N./Nº/N°.
+  - Regra de negócio importante: `numero_documento`/`Nosso Número` só
+    aceitam valores curtos/poucos dígitos quando vêm de um rótulo
+    conhecido (confiável); sem rótulo, o fallback por regex solto exige no
+    mínimo 4 dígitos — é o que evita recapturar o bug do "02".
   - `_localizar_rotulo` busca por **prioridade do rótulo** (ordem da lista
     `ROTULOS_*`), não por posição no documento: primeiro procura o rótulo
-    mais específico (ex: "Nosso Número") no documento inteiro; só cai para
-    um rótulo mais genérico (ex: "Número") se o específico não aparecer em
-    lugar nenhum. Existe porque um rótulo genérico que aparece mais cedo na
-    página (ex: "Número do Banco") vencia um rótulo específico e confiável
-    que aparecia mais tarde.
-  - Candidatos a `emissor`/`destinatario` passam por `_parece_nome`
-    (rejeita valores que são só dígitos/pontuação — carimbos de data/hora,
-    números soltos). Sem essa validação, um "Sacado" seguido de um carimbo
-    de data/hora no PDF virava destinatário.
+    mais específico no documento inteiro; só cai para um rótulo mais
+    genérico se o específico não aparecer em lugar nenhum. Existe porque
+    um rótulo genérico que aparece mais cedo na página (ex: "Número do
+    Banco") vencia um rótulo específico e confiável que aparecia mais
+    tarde.
+  - Candidatos a `emissor`/`destinatario` passam por `_parece_nome`, que
+    rejeita (a) valores que são só dígitos/pontuação — carimbos de
+    data/hora, números soltos — e (b) marcadores de cabeçalho/rodapé de
+    boleto (`MARCADORES_CABECALHO_RODAPE`: "Pág", "Página", "Recibo do
+    Sacado", ...). Sem (a), um "Sacado" seguido de carimbo de data/hora
+    virava destinatário; sem (b), a seção "Recibo do Sacado" (que contém a
+    palavra "Sacado") fazia o rótulo bater ali em vez de no campo de
+    verdade, capturando o rodapé "Pág: 1 de 1" como se fosse o nome.
   - "Nosso Número" às vezes vem como "02 / 10200000001-9" (prefixo de
-    carteira / número real) — `_extrair_numero_documento` reconhece esse
-    formato e usa a parte depois da barra.
+    carteira / número real) — `_extrair_valor_numerico_por_rotulo`
+    (compartilhada entre `numero_documento` e "Nosso Número") reconhece
+    esse formato e usa a parte depois da barra.
   - Rótulos combinados colados sem espaço (ex: "Sacado/PagadorFulano de
     Tal") são tratados por `_limpar_prefixo_rotulos`, mas SÓ quando há
     uma barra `/` logo após o primeiro rótulo — sem essa barra como sinal,
