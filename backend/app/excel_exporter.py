@@ -15,6 +15,7 @@ ROTULOS_METADADOS = {
     "tipo_documento": "Tipo de documento",
     "numero_documento": "Numero do documento",
     "data_emissao": "Data de emissao",
+    "data_vencimento": "Data de vencimento",
     "emissor": "Emissor",
     "destinatario": "Destinatario",
     "valor_total": "Valor total",

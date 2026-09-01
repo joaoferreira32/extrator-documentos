@@ -42,10 +42,16 @@ A IA é um **upgrade opcional**, não um requisito de funcionamento:
   virando "02", pedaço de outro campo). Reconhece boleto bancário, nota
   fiscal e pedido de compra por palavra-chave; identifica CNPJ/CPF por
   formato e associa ao emissor/destinatário mais próximo; para boleto,
-  também captura linha digitável e vencimento em `campos_adicionais`.
+  também captura linha digitável, parcela, agência/código do beneficiário
+  e os três valores (documento, desconto, valor a pagar) em
+  `campos_adicionais`; `valor_total` prioriza "Valor a Pagar" quando existe.
   `itens` normalmente fica vazio nesse modo — reconstruir tabelas de itens
   por regex não é confiável. Essa é uma limitação conhecida do MVP, não um
   bug.
+  - `data_emissao` e `data_vencimento` são campos separados — nunca se
+    misturam porque cada um busca por um rótulo diferente
+    (`ROTULOS_DATA_EMISSAO` vs `ROTULOS_VENCIMENTO`) e ambos exigem que o
+    candidato tenha uma data reconhecível (`_parece_data`) antes de aceitar.
   - Regra de negócio importante: `numero_documento` só aceita valores
     curtos/poucos dígitos quando vêm de um rótulo conhecido (confiável);
     sem rótulo, o fallback por regex solto exige no mínimo 4 dígitos — é
@@ -61,6 +67,15 @@ A IA é um **upgrade opcional**, não um requisito de funcionamento:
     (rejeita valores que são só dígitos/pontuação — carimbos de data/hora,
     números soltos). Sem essa validação, um "Sacado" seguido de um carimbo
     de data/hora no PDF virava destinatário.
+  - "Nosso Número" às vezes vem como "02 / 10200000001-9" (prefixo de
+    carteira / número real) — `_extrair_numero_documento` reconhece esse
+    formato e usa a parte depois da barra.
+  - Rótulos combinados colados sem espaço (ex: "Sacado/PagadorFulano de
+    Tal") são tratados por `_limpar_prefixo_rotulos`, mas SÓ quando há
+    uma barra `/` logo após o primeiro rótulo — sem essa barra como sinal,
+    a limpeza fica desligada de propósito: já foi bug real remover
+    "Fornecedor" do começo do nome de uma empresa só porque "Fornecedor"
+    também é um rótulo válido de emissor.
 - **Modo IA** (`modo_extracao: "ia"`): usado quando `ANTHROPIC_API_KEY` está
   configurada. Tenta primeiro; se a chamada falhar por qualquer motivo (rede,
   rate limit, resposta inválida), cai para o modo básico automaticamente e
@@ -107,10 +122,9 @@ amigáveis em vez de 500.
 `POST /debug/extract-text` devolve o texto bruto do pdfplumber (sem
 nenhuma extração de campos em cima) — usado para inspecionar como os
 rótulos aparecem de verdade num PDF real antes de ajustar regex/
-heurísticas do modo básico. Investigação em aberto: `data_emissao` do
-modo básico às vezes pega a data de vencimento em vez da de emissão em
-boletos reais — causa raiz ainda não confirmada, precisa do texto bruto
-de um caso real para corrigir com segurança.
+heurísticas do modo básico. Foi assim que os bugs de boleto real (número
+com barra, rótulo colado, vencimento não capturado, valores sem "R$") do
+histórico do projeto foram diagnosticados e corrigidos.
 
 Não implementado ainda / possíveis próximos passos:
 

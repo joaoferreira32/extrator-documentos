@@ -29,6 +29,7 @@ class DocumentoExtraido(BaseModel):
     tipo_documento: str = "desconhecido"
     numero_documento: Optional[str] = None
     data_emissao: Optional[str] = None
+    data_vencimento: Optional[str] = None
     emissor: Optional[str] = None
     destinatario: Optional[str] = None
     valor_total: Optional[Numero] = None

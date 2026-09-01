@@ -16,6 +16,7 @@ const ROTULOS_METADADOS = {
   tipo_documento: "Tipo de documento",
   numero_documento: "Número do documento",
   data_emissao: "Data de emissão",
+  data_vencimento: "Data de vencimento",
   emissor: "Emissor",
   destinatario: "Destinatário",
   valor_total: "Valor total",

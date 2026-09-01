@@ -22,8 +22,14 @@ from app.schemas import CampoAdicional, DocumentoExtraido
 
 DATA_RE = re.compile(r"\b(\d{2}[/-]\d{2}[/-]\d{4})\b")
 VALOR_RE = re.compile(r"R\$\s*([\d.]+,\d{2})")
+# Valor monetario BR sem exigir prefixo "R$" -- boletos costumam mostrar
+# "Valor Documento 1.000,00" sem o "R$" na frente.
+VALOR_NUM_RE = re.compile(r"(\d{1,3}(?:\.\d{3})*,\d{2})")
 CNPJ_RE = re.compile(r"\b\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}\b")
 CPF_RE = re.compile(r"\b\d{3}\.\d{3}\.\d{3}-\d{2}\b")
+# "Nosso Número" as vezes vem como "02 / 10200000001-9" -- os digitos
+# antes da barra sao so um prefixo/carteira, o numero real e depois dela.
+NUMERO_COM_BARRA_RE = re.compile(r"(\d[\d.\-]*)\s*/\s*(\d[\d.\-]*)")
 
 # Formato padrao da linha digitavel de boleto bancario: grupos de
 # 5.5.5.6.5.6.1.14 digitos (47 no total), separados por ponto ou espaco.
@@ -44,6 +50,9 @@ ROTULOS_NUMERO_DOCUMENTO = [
     "Nosso Numero",
     "Número do documento",
     "Numero do documento",
+    "Nr do documento",
+    "Nr. do documento",
+    "Nº do documento",
     "Pedido de Compra Nº",
     "Pedido de Compra N.",
     "Número",
@@ -51,6 +60,16 @@ ROTULOS_NUMERO_DOCUMENTO = [
 ]
 ROTULOS_DATA_EMISSAO = ["Data de Emissão", "Data de Emissao", "Emissão", "Emissao"]
 ROTULOS_VENCIMENTO = ["Vencimento"]
+ROTULOS_VALOR_DOCUMENTO = ["Valor Documento", "Valor do Documento"]
+ROTULOS_DESCONTO = ["Desconto"]
+ROTULOS_VALOR_A_PAGAR = ["Valor a Pagar", "Valor Pagar"]
+ROTULOS_PARCELA = ["Parcela"]
+ROTULOS_AGENCIA_CODIGO = [
+    "Agência/Código Beneficiário",
+    "Agencia/Codigo Beneficiario",
+    "Agência/Cód. Beneficiário",
+    "Agencia/Cod. Beneficiario",
+]
 
 TODOS_ROTULOS = (
     ROTULOS_EMISSOR
@@ -58,6 +77,11 @@ TODOS_ROTULOS = (
     + ROTULOS_NUMERO_DOCUMENTO
     + ROTULOS_DATA_EMISSAO
     + ROTULOS_VENCIMENTO
+    + ROTULOS_VALOR_DOCUMENTO
+    + ROTULOS_DESCONTO
+    + ROTULOS_VALOR_A_PAGAR
+    + ROTULOS_PARCELA
+    + ROTULOS_AGENCIA_CODIGO
 )
 
 # Palavras-chave para classificar o tipo de documento. Ordem importa: do
@@ -107,9 +131,32 @@ def _detectar_tipo_documento(texto_lower: str) -> str:
     return "desconhecido"
 
 
+def _extrair_valor_rotulo(texto: str, rotulos: list[str]) -> Optional[str]:
+    """Procura um rotulo de valor monetario (ex: "Desconto", "Valor a
+    Pagar") e o numero BR logo depois dele na mesma linha -- com ou sem
+    "R$"/"=" no meio (boletos variam: "Valor Documento 1.000,00" vs
+    "Desconto = R$ 100,00")."""
+    for linha in texto.splitlines():
+        linha_lower = linha.lower()
+        for rotulo in rotulos:
+            idx = linha_lower.find(rotulo.lower())
+            if idx == -1:
+                continue
+            resto = linha[idx + len(rotulo) :]
+            m = VALOR_NUM_RE.search(resto)
+            if m:
+                return m.group(1)
+    return None
+
+
 def _valor_total(texto: str) -> Optional[str]:
-    """Prioriza uma linha que mencione "total"; senao usa a ultima
+    """Em boleto, "Valor a Pagar" e o valor final confiavel. Sem esse
+    rotulo, prioriza uma linha que mencione "total"; senao usa a ultima
     ocorrencia de valor monetario no texto."""
+    valor_a_pagar = _extrair_valor_rotulo(texto, ROTULOS_VALOR_A_PAGAR)
+    if valor_a_pagar:
+        return valor_a_pagar
+
     for linha in texto.splitlines():
         if "total" in linha.lower():
             m = VALOR_RE.search(linha)
@@ -176,8 +223,33 @@ def _parece_nome(valor: str) -> bool:
     return any(ch.isalpha() for ch in valor)
 
 
+def _parece_data(valor: str) -> bool:
+    """Rejeita candidatos onde nao ha nenhuma data reconhecivel -- evita
+    que uma mencao solta ao rotulo (ex: um aviso de "vencimento" no rodape,
+    sem data por perto) trave a busca antes de achar o campo de verdade."""
+    return bool(DATA_RE.search(valor))
+
+
 def _sempre_valido(_valor: str) -> bool:
     return True
+
+
+def _limpar_prefixo_rotulos(valor: str, rotulos: list[str]) -> str:
+    """Boletos costumam mostrar um rotulo combinado tipo "Sacado/Pagador"
+    grudado no nome sem separador: depois de remover "Sacado", sobra
+    "/PagadorFulano de Tal". So mexe quando ha uma BARRA logo no
+    inicio (sinal inequivoco de rotulo combinado) -- sem essa barra,
+    qualquer palavra do valor que por acaso bata com outro rotulo da
+    mesma categoria fica intacta (ex: emissor "Fornecedor Exemplo Ltda"
+    nao pode perder o "Fornecedor" so por ele tambem ser um rotulo)."""
+    valor = valor.lstrip(" -:\t")
+    if not valor.startswith("/"):
+        return valor
+    resto = valor[1:].lstrip(" -:\t")
+    for rotulo in rotulos:
+        if resto.lower().startswith(rotulo.lower()):
+            return resto[len(rotulo) :].lstrip(" /-:\t")
+    return resto
 
 
 def _localizar_rotulo(
@@ -206,6 +278,8 @@ def _localizar_rotulo(
                 continue
 
             resto = _remainder_apos_rotulo(linha, rotulo)
+            if resto:
+                resto = _limpar_prefixo_rotulos(resto, rotulos)
             valor = _truncar_em_proximo_rotulo(resto, paradas) if resto else ""
             if valor and validador(valor):
                 return i, valor
@@ -213,7 +287,8 @@ def _localizar_rotulo(
             if i + 1 < len(linhas):
                 proxima = linhas[i + 1].strip()
                 if proxima and not _parece_rotulo(proxima):
-                    valor = _truncar_em_proximo_rotulo(proxima, paradas)
+                    proxima = _limpar_prefixo_rotulos(proxima, rotulos)
+                    valor = _truncar_em_proximo_rotulo(proxima, paradas) if proxima else ""
                     if valor and validador(valor):
                         return i, valor
     return None
@@ -245,7 +320,7 @@ def _extrair_entidade(linhas: list[str], rotulos: list[str]) -> Optional[str]:
 
 
 def _extrair_data(linhas: list[str], rotulos: list[str]) -> Optional[str]:
-    encontrado = _localizar_rotulo(linhas, rotulos)
+    encontrado = _localizar_rotulo(linhas, rotulos, validador=_parece_data)
     if not encontrado:
         return None
     _, bruto = encontrado
@@ -253,19 +328,29 @@ def _extrair_data(linhas: list[str], rotulos: list[str]) -> Optional[str]:
     return m.group(1) if m else None
 
 
+def _parece_numero(valor: str) -> bool:
+    primeiro_token = valor.split()[0] if valor.split() else ""
+    return _contar_digitos(primeiro_token) >= 1
+
+
 def _extrair_numero_documento(linhas: list[str], texto: str) -> Optional[str]:
     # Vindo de um rotulo conhecido (ex: "Nosso Número:"), confiamos no
     # valor mesmo com poucos digitos -- o rotulo ja e a garantia de que
     # nao e um numero solto. Sem rotulo, exigimos pelo menos 4 digitos
     # (e o que evita pegar pedacos curtos soltos, tipo "02", em qualquer
-    # lugar do texto).
-    encontrado = _localizar_rotulo(linhas, ROTULOS_NUMERO_DOCUMENTO)
+    # lugar do texto). O validador aqui so confirma que ha algum digito;
+    # se um rotulo bater em algo sem digito nenhum, a busca continua para
+    # o proximo rotulo da lista em vez de desistir.
+    encontrado = _localizar_rotulo(linhas, ROTULOS_NUMERO_DOCUMENTO, validador=_parece_numero)
     if encontrado:
         _, bruto = encontrado
+        # "Nosso Número: 02 / 10200000001-9" -- os digitos antes da barra
+        # sao so um prefixo/carteira; o numero de verdade vem depois dela.
+        m_barra = NUMERO_COM_BARRA_RE.match(bruto)
+        if m_barra:
+            return m_barra.group(2)
         partes = bruto.split()
-        token = partes[0].strip(".:-") if partes else ""
-        if _contar_digitos(token) >= 1:
-            return token
+        return partes[0].strip(".:-") if partes else None
 
     m = NUM_DOCUMENTO_RE.search(texto)
     return m.group(1) if m else None
@@ -283,14 +368,33 @@ def extrair(texto: str) -> DocumentoExtraido:
     if linha_dig:
         campos_adicionais.append(CampoAdicional(campo="Linha digitável", valor=linha_dig))
 
-    vencimento = _extrair_data(linhas, ROTULOS_VENCIMENTO)
-    if vencimento:
-        campos_adicionais.append(CampoAdicional(campo="Vencimento", valor=vencimento))
+    valor_documento = _extrair_valor_rotulo(texto, ROTULOS_VALOR_DOCUMENTO)
+    if valor_documento:
+        campos_adicionais.append(CampoAdicional(campo="Valor do Documento", valor=valor_documento))
+
+    desconto = _extrair_valor_rotulo(texto, ROTULOS_DESCONTO)
+    if desconto:
+        campos_adicionais.append(CampoAdicional(campo="Desconto", valor=desconto))
+
+    valor_a_pagar = _extrair_valor_rotulo(texto, ROTULOS_VALOR_A_PAGAR)
+    if valor_a_pagar:
+        campos_adicionais.append(CampoAdicional(campo="Valor a Pagar", valor=valor_a_pagar))
+
+    parcela = _localizar_rotulo(linhas, ROTULOS_PARCELA)
+    if parcela:
+        campos_adicionais.append(CampoAdicional(campo="Parcela", valor=parcela[1]))
+
+    agencia_codigo = _localizar_rotulo(linhas, ROTULOS_AGENCIA_CODIGO)
+    if agencia_codigo:
+        campos_adicionais.append(
+            CampoAdicional(campo="Agência/Código Beneficiário", valor=agencia_codigo[1])
+        )
 
     return DocumentoExtraido(
         tipo_documento=_detectar_tipo_documento(texto_lower),
         numero_documento=_extrair_numero_documento(linhas, texto),
         data_emissao=_extrair_data(linhas, ROTULOS_DATA_EMISSAO),
+        data_vencimento=_extrair_data(linhas, ROTULOS_VENCIMENTO),
         emissor=_extrair_entidade(linhas, ROTULOS_EMISSOR),
         destinatario=_extrair_entidade(linhas, ROTULOS_DESTINATARIO),
         valor_total=para_numero(valor_total_bruto) if valor_total_bruto else None,
