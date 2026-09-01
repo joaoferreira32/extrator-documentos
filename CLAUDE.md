@@ -34,11 +34,22 @@ frontend/
 A IA é um **upgrade opcional**, não um requisito de funcionamento:
 
 - **Modo básico** (`modo_extracao: "basico"`): sempre disponível, não depende
-  de chave de API. `pdfplumber` extrai o texto e `basic_extractor.py` usa
-  regex/heurísticas para capturar datas, valores monetários e número do
-  documento. `itens` normalmente fica vazio nesse modo — reconstruir tabelas
-  de itens por regex não é confiável. Essa é uma limitação conhecida do MVP,
-  não um bug.
+  de chave de API. `pdfplumber` extrai o texto e `basic_extractor.py` busca
+  por **rótulos conhecidos** (`Beneficiário:`, `Cedente:`, `Sacado:`,
+  `Nosso Número:`, `Vencimento:`, etc.) e usa o texto logo depois deles —
+  mais confiável do que regex solto pelo texto inteiro, que tende a capturar
+  pedaços soltos de outros números (esse foi um bug real: `numero_documento`
+  virando "02", pedaço de outro campo). Reconhece boleto bancário, nota
+  fiscal e pedido de compra por palavra-chave; identifica CNPJ/CPF por
+  formato e associa ao emissor/destinatário mais próximo; para boleto,
+  também captura linha digitável e vencimento em `campos_adicionais`.
+  `itens` normalmente fica vazio nesse modo — reconstruir tabelas de itens
+  por regex não é confiável. Essa é uma limitação conhecida do MVP, não um
+  bug.
+  - Regra de negócio importante: `numero_documento` só aceita valores
+    curtos/poucos dígitos quando vêm de um rótulo conhecido (confiável);
+    sem rótulo, o fallback por regex solto exige no mínimo 4 dígitos — é
+    o que evita recapturar o bug do "02".
 - **Modo IA** (`modo_extracao: "ia"`): usado quando `ANTHROPIC_API_KEY` está
   configurada. Tenta primeiro; se a chamada falhar por qualquer motivo (rede,
   rate limit, resposta inválida), cai para o modo básico automaticamente e

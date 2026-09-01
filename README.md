@@ -19,11 +19,17 @@ exibe numa tabela e permite baixar o resultado em Excel.
 A IA é um **upgrade opcional**, não um requisito para o sistema funcionar:
 
 - **Modo básico** (padrão, sem nenhuma configuração): `pdfplumber` extrai o
-  texto do PDF e uma extração por regex/heurística captura os campos óbvios
-  — datas, valores monetários, número do documento, emissor/destinatário.
-  Reconstruir a tabela de itens de forma confiável por regex não é viável a
-  partir de texto de PDF sem estrutura, então nesse modo `itens` normalmente
-  fica vazio. É uma limitação conhecida, não um bug.
+  texto do PDF e `basic_extractor.py` captura os campos por **rótulo**
+  conhecido (`Beneficiário:`, `Sacado:`, `Cedente:`, `Nosso Número:`,
+  `Vencimento:`, etc.) em vez de regex solto pelo texto inteiro — isso é o
+  que evita pegar pedaços soltos de outros números. Reconhece boleto
+  bancário, nota fiscal (`DANFE`/`NF-e`/`CFOP`) e pedido de compra por
+  palavra-chave, identifica CNPJ/CPF por formato e associa ao
+  emissor/destinatário quando aparecem perto do nome, e para boletos
+  também captura linha digitável e vencimento. Reconstruir a tabela de
+  itens de forma confiável por regex não é viável a partir de texto de PDF
+  sem estrutura, então nesse modo `itens` normalmente fica vazio. É uma
+  limitação conhecida, não um bug.
 - **Modo IA** (com `ANTHROPIC_API_KEY` configurada): usa a API da Anthropic
   (Claude) via [Structured Outputs](https://docs.claude.com/) para extrair
   os mesmos campos com muito mais precisão, incluindo a lista de itens. Se a
@@ -68,6 +74,11 @@ básico.
   confiável, e caem para `string` quando não é — isso é o que faz a
   planilha Excel sair com números realmente somáveis, sem quebrar a
   extração quando algum valor vem em formato inesperado.
+- **Extração por rótulo, não regex solto pelo texto todo:** o modo básico
+  procura primeiro um rótulo conhecido e usa o texto logo depois dele. É
+  mais confiável do que casar um padrão em qualquer lugar do documento
+  (que tende a "roubar" pedaços de outros números, como linha digitável ou
+  CNPJ) e permite associar CNPJ/CPF ao nome da entidade mais próxima.
 - **PDF escaneado (sem texto extraível):** detectado antes de tentar
   qualquer extração, retornando um aviso claro em vez de um resultado vazio
   sem explicação. OCR está fora do escopo deste MVP (ver `TODO` em
