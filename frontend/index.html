@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Extrator de Documentos</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <main>
+    <h1>Extrator Inteligente de Documentos</h1>
+    <p>Envie um PDF (nota fiscal, pedido de compra ou relatório) para extrair os dados.</p>
+
+    <form id="upload-form">
+      <input type="file" id="file-input" accept="application/pdf" required />
+      <button id="btn-extrair" type="submit">Extrair dados</button>
+    </form>
+
+    <p id="status"></p>
+
+    <section id="resultado" hidden>
+      <p>
+        <span id="badge-modo" class="badge"></span>
+        <span id="aviso" class="aviso"></span>
+      </p>
+
+      <button id="btn-excel" type="button">Baixar Excel</button>
+
+      <h2>Dados do documento</h2>
+      <table id="tabela-metadados"></table>
+
+      <h2>Itens</h2>
+      <table id="tabela-itens"></table>
+
+      <details>
+        <summary>Ver JSON bruto</summary>
+        <pre id="json-bruto"></pre>
+      </details>
+    </section>
+  </main>
+
+  <script src="script.js"></script>
+</body>
+</html>

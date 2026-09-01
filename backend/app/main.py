@@ -1,0 +1,87 @@
+from pathlib import Path
+
+from fastapi import FastAPI, HTTPException, UploadFile
+from fastapi.responses import StreamingResponse
+from fastapi.staticfiles import StaticFiles
+
+from app import basic_extractor, config, excel_exporter, llm_extractor, pdf_extractor
+from app.schemas import ExtractionResult
+
+BASE_DIR = Path(__file__).resolve().parent.parent.parent
+FRONTEND_DIR = BASE_DIR / "frontend"
+
+TAMANHO_MAXIMO_BYTES = 20 * 1024 * 1024  # 20 MB
+
+app = FastAPI(title="Extrator Inteligente de Documentos")
+
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
+
+@app.post("/extract-document", response_model=ExtractionResult)
+async def extract_document(file: UploadFile):
+    if file.content_type != "application/pdf":
+        raise HTTPException(status_code=400, detail="Envie um arquivo PDF.")
+
+    conteudo = await file.read()
+    if not conteudo:
+        raise HTTPException(status_code=400, detail="Arquivo vazio.")
+    if len(conteudo) > TAMANHO_MAXIMO_BYTES:
+        raise HTTPException(status_code=400, detail="Arquivo maior que 20 MB.")
+
+    try:
+        resultado_texto = pdf_extractor.extrair_texto(conteudo)
+    except Exception:
+        raise HTTPException(
+            status_code=400,
+            detail="Nao foi possivel ler este arquivo como PDF. Ele pode estar corrompido.",
+        )
+
+    if resultado_texto.parece_escaneado:
+        return ExtractionResult(
+            modo_extracao="basico",
+            aviso=(
+                "Este PDF parece ser uma imagem escaneada (sem texto "
+                "extraivel). OCR nao esta incluido neste MVP."
+            ),
+            documento=basic_extractor.extrair(""),
+        )
+
+    if config.ia_disponivel():
+        try:
+            documento = llm_extractor.extrair(resultado_texto.texto)
+            return ExtractionResult(modo_extracao="ia", documento=documento)
+        except Exception as exc:
+            # Captura ampla e intencional: qualquer falha da IA (rede, auth,
+            # rate limit, resposta fora do schema) deve cair para o modo
+            # basico em vez de virar erro para quem esta usando o sistema.
+            documento = basic_extractor.extrair(resultado_texto.texto)
+            return ExtractionResult(
+                modo_extracao="basico",
+                aviso=(
+                    f"Extracao por IA indisponivel no momento "
+                    f"({type(exc).__name__}), usando modo basico."
+                ),
+                documento=documento,
+            )
+
+    documento = basic_extractor.extrair(resultado_texto.texto)
+    return ExtractionResult(modo_extracao="basico", documento=documento)
+
+
+@app.post("/export-excel")
+async def export_excel(resultado: ExtractionResult):
+    buffer = excel_exporter.gerar_excel(resultado)
+    return StreamingResponse(
+        buffer,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="documento_extraido.xlsx"'},
+    )
+
+
+# Rotas da API (extract-document, export-excel, ...) devem ser adicionadas
+# ACIMA deste mount. O StaticFiles em "/" e um catch-all: qualquer rota
+# definida depois dele nunca seria alcancada.
+app.mount("/", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")
