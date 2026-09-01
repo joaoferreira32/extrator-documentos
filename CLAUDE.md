@@ -25,6 +25,9 @@ backend/app/
   basic_extractor.py  # extração heurística por regex (modo "basico")
   llm_extractor.py    # extração via Claude (modo "ia", opcional)
   excel_exporter.py   # ExtractionResult -> .xlsx
+backend/tests/
+  fixtures/boleto_real_anonimizado.txt  # texto bruto de boleto real (dados trocados)
+  test_basic_extractor.py               # roda o extrator sobre a fixture acima
 frontend/
   index.html, style.css, script.js
 ```
@@ -126,6 +129,33 @@ uvicorn app.main:app --reload
 Abrir `http://localhost:8000` (frontend) ou `http://localhost:8000/docs`
 (Swagger UI para testar os endpoints diretamente).
 
+**Se editar o código e o comportamento não mudar** (uma rota nova não
+aparece no `/docs`, uma correção parece "não ter feito efeito"), quase
+certo que sobrou um processo antigo do uvicorn preso na porta 8000. Já
+aconteceu duas vezes neste projeto. No Windows:
+`netstat -ano | findstr :8000` para achar o PID, `taskkill /F /PID <PID>`
+para matar, e reiniciar o servidor antes de testar de novo.
+
+## Testes
+
+```bash
+cd backend
+pytest tests/ -v -s
+```
+
+`tests/test_basic_extractor.py` roda `basic_extractor.extrair()` sobre
+`tests/fixtures/boleto_real_anonimizado.txt` — texto bruto de um boleto
+real (nome/CPF/CNPJ/valores trocados por fictícios, mas rótulos e
+estrutura de linha exatamente como o pdfplumber extraiu). Esse fixture
+existe porque cenários sintéticos escritos à mão não reproduziam bugs
+reais: o mesmo rótulo (ex: "Sacado") aparece várias vezes no boleto em
+contextos diferentes (título de seção, rodapé, tabela-resumo, campo de
+verdade), e só um teste sobre o texto real pega isso. `_localizar_rotulo`
+loga (nível DEBUG, logger `app.basic_extractor`) qual rótulo/linha foi
+aceito ou rejeitado para cada campo — o teste imprime esse log com
+`caplog`, então dá pra ver exatamente onde a extração está acertando ou
+errando sem precisar adivinhar.
+
 ## Estado atual / próximas etapas
 
 MVP funcional de ponta a ponta (testado no navegador via Playwright):
@@ -146,8 +176,9 @@ Não implementado ainda / possíveis próximos passos:
 
 - OCR para PDFs escaneados (`TODO` em `backend/app/pdf_extractor.py`).
 - Modo básico não reconstrói tabela de itens (só o modo IA faz isso hoje).
-- Testes automatizados (o projeto foi validado manualmente etapa por etapa
-  durante a construção, mas não há suíte de testes ainda).
+- Só há um fixture de teste automatizado (um boleto real anonimizado). Vale
+  adicionar mais fixtures reais (nota fiscal, pedido de compra) conforme
+  aparecerem casos.
 
 Plano original com todas as etapas em
 `C:\Users\User\.claude\plans\jazzy-foraging-harbor.md`.

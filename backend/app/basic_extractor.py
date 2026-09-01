@@ -15,10 +15,13 @@ regex solto, que tende a pegar pedacos de outros numeros (linha digitavel,
 CNPJ, etc). Regex solto continua existindo como fallback quando nenhum
 rotulo e encontrado.
 """
+import logging
 import re
 from typing import Optional
 
 from app.schemas import CampoAdicional, DocumentoExtraido
+
+logger = logging.getLogger(__name__)
 
 DATA_RE = re.compile(r"\b(\d{2}[/-]\d{2}[/-]\d{4})\b")
 VALOR_RE = re.compile(r"R\$\s*([\d.]+,\d{2})")
@@ -75,6 +78,8 @@ ROTULOS_AGENCIA_CODIGO = [
     "Agencia/Codigo Beneficiario",
     "Agência/Cód. Beneficiário",
     "Agencia/Cod. Beneficiario",
+    "Ag/Código Beneficiário",
+    "Ag/Codigo Beneficiario",
 ]
 
 TODOS_ROTULOS = (
@@ -310,15 +315,36 @@ def _localizar_rotulo(
                 resto = _limpar_prefixo_rotulos(resto, rotulos)
             valor = _truncar_em_proximo_rotulo(resto, paradas) if resto else ""
             if valor and validador(valor):
+                logger.debug(
+                    "ACEITO (mesma linha) rotulo=%r linha=%d texto_linha=%r -> valor=%r",
+                    rotulo, i, linha, valor,
+                )
                 return i, valor
+            if valor:
+                logger.debug(
+                    "rejeitado (mesma linha) rotulo=%r linha=%d texto_linha=%r -> valor=%r",
+                    rotulo, i, linha, valor,
+                )
 
             if i + 1 < len(linhas):
-                proxima = linhas[i + 1].strip()
-                if proxima and not _parece_rotulo(proxima):
-                    proxima = _limpar_prefixo_rotulos(proxima, rotulos)
+                proxima_bruta = linhas[i + 1].strip()
+                if proxima_bruta and not _parece_rotulo(proxima_bruta):
+                    proxima = _limpar_prefixo_rotulos(proxima_bruta, rotulos)
                     valor = _truncar_em_proximo_rotulo(proxima, paradas) if proxima else ""
                     if valor and validador(valor):
+                        logger.debug(
+                            "ACEITO (linha seguinte) rotulo=%r linha=%d texto_linha=%r "
+                            "proxima_linha=%r -> valor=%r",
+                            rotulo, i, linha, proxima_bruta, valor,
+                        )
                         return i, valor
+                    if valor:
+                        logger.debug(
+                            "rejeitado (linha seguinte) rotulo=%r linha=%d "
+                            "proxima_linha=%r -> valor=%r",
+                            rotulo, i, proxima_bruta, valor,
+                        )
+    logger.debug("NENHUM candidato encontrado para rotulos=%r", rotulos)
     return None
 
 

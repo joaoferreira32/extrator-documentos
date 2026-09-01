@@ -1,0 +1,24 @@
+Recibo do Sacado 01/09/2026 15.42.26
+Pág: 1 de 1
+BRADESCO 237 11111.11111 11111.111111 11111.111111 1 11111111111111
+Beneficiário: INSTITUICAO EXEMPLO DE ENSINO
+CNPJ Beneficiário: 11.111.111/0001-11
+Ag/Código Beneficiário: 0000-0/0000000
+Nosso número: 02 / 10200000001-9
+Data de emissão: 08/07/2026
+Nr do documento: 1234567890
+Curso: Engenharia de Computação Turma:EXEMPLO1N26.2
+PagadorMaria Silva Santos CPF: 111.222.333-44
+Rua Exemplo, 100 - Casa - Bairro Teste - 00.000-000 - Cidade - Estado
+Parcela: 2/5
+Desconto = R$ 100,00 (Descontos: Aluno = R$ 0,00 Inst= R$ 100,00) Valor a Pagar = R$ 900,00
+Valor Documento (-) desconto (-) outras deduções (+) mora / multa (+) outros acréscimos
+1.000,00
+Vencimento ( = ) Valor Cobrado Autenticação menânica - Recibo sacado
+08/09/2026
+Local de Pagamento Vencimento
+08/09/2026
+Data de emissão Número do documento Espécie Aceite Data de Processamento Nosso número
+08/07/2026 1234567890 DM N 08/07/2026 02 / 10200000001-9
+Pagador Maria Silva Santos CPF: 111.222.333-44
+Autenticação Mecânica - Ficha de Compensação

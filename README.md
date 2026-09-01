@@ -63,6 +63,18 @@ Acesse `http://localhost:8000`.
 Sem a chave configurada, o sistema continua funcionando normalmente em modo
 básico.
 
+### Rodando os testes
+
+```bash
+cd backend
+pytest tests/ -v -s
+```
+
+Inclui um teste de regressão sobre o texto bruto de um boleto bancário real
+(dados pessoais trocados por fictícios) — existe porque cenários sintéticos
+escritos à mão não reproduziam bugs que só apareciam no documento de
+verdade.
+
 ## Decisões técnicas
 
 - **`client.messages.parse(output_format=...)`** (Anthropic Structured
