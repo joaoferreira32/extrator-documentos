@@ -50,6 +50,17 @@ A IA é um **upgrade opcional**, não um requisito de funcionamento:
     curtos/poucos dígitos quando vêm de um rótulo conhecido (confiável);
     sem rótulo, o fallback por regex solto exige no mínimo 4 dígitos — é
     o que evita recapturar o bug do "02".
+  - `_localizar_rotulo` busca por **prioridade do rótulo** (ordem da lista
+    `ROTULOS_*`), não por posição no documento: primeiro procura o rótulo
+    mais específico (ex: "Nosso Número") no documento inteiro; só cai para
+    um rótulo mais genérico (ex: "Número") se o específico não aparecer em
+    lugar nenhum. Existe porque um rótulo genérico que aparece mais cedo na
+    página (ex: "Número do Banco") vencia um rótulo específico e confiável
+    que aparecia mais tarde.
+  - Candidatos a `emissor`/`destinatario` passam por `_parece_nome`
+    (rejeita valores que são só dígitos/pontuação — carimbos de data/hora,
+    números soltos). Sem essa validação, um "Sacado" seguido de um carimbo
+    de data/hora no PDF virava destinatário.
 - **Modo IA** (`modo_extracao: "ia"`): usado quando `ANTHROPIC_API_KEY` está
   configurada. Tenta primeiro; se a chamada falhar por qualquer motivo (rede,
   rate limit, resposta inválida), cai para o modo básico automaticamente e
@@ -92,6 +103,14 @@ upload de PDF -> extração (modo básico sempre; modo IA quando
 em caso de falha) -> tabela na tela -> download em Excel. Erros comuns
 (arquivo não-PDF, PDF corrompido, arquivo muito grande) retornam mensagens
 amigáveis em vez de 500.
+
+`POST /debug/extract-text` devolve o texto bruto do pdfplumber (sem
+nenhuma extração de campos em cima) — usado para inspecionar como os
+rótulos aparecem de verdade num PDF real antes de ajustar regex/
+heurísticas do modo básico. Investigação em aberto: `data_emissao` do
+modo básico às vezes pega a data de vencimento em vez da de emissão em
+boletos reais — causa raiz ainda não confirmada, precisa do texto bruto
+de um caso real para corrigir com segurança.
 
 Não implementado ainda / possíveis próximos passos:
 

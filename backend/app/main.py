@@ -71,6 +71,35 @@ async def extract_document(file: UploadFile):
     return ExtractionResult(modo_extracao="basico", documento=documento)
 
 
+@app.post("/debug/extract-text")
+async def debug_extract_text(file: UploadFile):
+    """Endpoint de debug: devolve o texto bruto que o pdfplumber extraiu do
+    PDF, sem nenhuma extracao de campos em cima. Usado para inspecionar
+    como os rotulos aparecem de verdade num documento real antes de
+    ajustar as regex/heuristicas do modo basico."""
+    if file.content_type != "application/pdf":
+        raise HTTPException(status_code=400, detail="Envie um arquivo PDF.")
+
+    conteudo = await file.read()
+    if not conteudo:
+        raise HTTPException(status_code=400, detail="Arquivo vazio.")
+
+    try:
+        resultado_texto = pdf_extractor.extrair_texto(conteudo)
+    except Exception:
+        raise HTTPException(
+            status_code=400,
+            detail="Nao foi possivel ler este arquivo como PDF. Ele pode estar corrompido.",
+        )
+
+    return {
+        "numero_paginas": resultado_texto.numero_paginas,
+        "parece_escaneado": resultado_texto.parece_escaneado,
+        "texto": resultado_texto.texto,
+        "linhas": resultado_texto.texto.splitlines(),
+    }
+
+
 @app.post("/export-excel")
 async def export_excel(resultado: ExtractionResult):
     buffer = excel_exporter.gerar_excel(resultado)

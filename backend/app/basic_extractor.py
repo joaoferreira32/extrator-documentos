@@ -169,27 +169,52 @@ def _parece_rotulo(linha: str) -> bool:
     return any(normalizado == rotulo.lower() for rotulo in TODOS_ROTULOS)
 
 
-def _localizar_rotulo(linhas: list[str], rotulos: list[str]) -> Optional[tuple[int, str]]:
-    """Procura, linha a linha, por qualquer um dos rotulos. Se o resto da
-    linha apos o rotulo estiver vazio, tenta a linha seguinte -- layout
-    comum em boletos extraidos de PDF, onde rotulo e valor saem em linhas
-    separadas."""
+def _parece_nome(valor: str) -> bool:
+    """Rejeita candidatos que sao so digitos/pontuacao/espaco -- carimbos de
+    data/hora, numeros soltos, etc. Um nome de pessoa ou empresa sempre tem
+    pelo menos uma letra."""
+    return any(ch.isalpha() for ch in valor)
+
+
+def _sempre_valido(_valor: str) -> bool:
+    return True
+
+
+def _localizar_rotulo(
+    linhas: list[str],
+    rotulos: list[str],
+    validador=_sempre_valido,
+) -> Optional[tuple[int, str]]:
+    """Procura por qualquer um dos rotulos no documento inteiro.
+
+    A ordem de busca e por PRIORIDADE do rotulo (a ordem da lista), nao por
+    posicao no documento: primeiro tenta achar o rotulo mais especifico
+    (ex: "Nosso Número") em qualquer linha; so tenta o proximo rotulo da
+    lista (mais generico, ex: "Número") se o mais especifico nao aparecer
+    em lugar nenhum. Isso evita que um rotulo generico que aparece mais
+    cedo na pagina (ex: "Número do Banco") vença um rotulo especifico e
+    confiavel que aparece mais tarde.
+
+    Se o resto da linha apos o rotulo estiver vazio (ou nao passar no
+    `validador`), tenta a linha seguinte -- layout comum em boletos
+    extraidos de PDF, onde rotulo e valor saem em linhas separadas.
+    """
     paradas = _paradas_excluindo(rotulos)
-    for i, linha in enumerate(linhas):
-        for rotulo in rotulos:
+    for rotulo in rotulos:
+        for i, linha in enumerate(linhas):
             if rotulo.lower() not in linha.lower():
                 continue
 
             resto = _remainder_apos_rotulo(linha, rotulo)
             valor = _truncar_em_proximo_rotulo(resto, paradas) if resto else ""
-            if valor:
+            if valor and validador(valor):
                 return i, valor
 
             if i + 1 < len(linhas):
                 proxima = linhas[i + 1].strip()
                 if proxima and not _parece_rotulo(proxima):
                     valor = _truncar_em_proximo_rotulo(proxima, paradas)
-                    if valor:
+                    if valor and validador(valor):
                         return i, valor
     return None
 
@@ -208,7 +233,7 @@ def _documento_fiscal_proximo(linhas: list[str], indice: int, janela: int = 3) -
 
 
 def _extrair_entidade(linhas: list[str], rotulos: list[str]) -> Optional[str]:
-    encontrado = _localizar_rotulo(linhas, rotulos)
+    encontrado = _localizar_rotulo(linhas, rotulos, validador=_parece_nome)
     if not encontrado:
         return None
     indice, nome = encontrado
