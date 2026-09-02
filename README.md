@@ -98,6 +98,10 @@ verdade.
 - **Frontend servido pelo próprio FastAPI** (`StaticFiles`, um único
   processo em `localhost:8000`) em vez de dois servidores separados —
   evita configurar CORS e simplifica rodar o projeto localmente.
+- **CSS puro com custom properties**, sem framework nem CDN externo:
+  paleta e espaçamento centralizados em variáveis (`:root`), drag-and-drop
+  nativo (`dragenter`/`drop`) sem biblioteca, e estados de carregamento/erro
+  como elementos próprios da página em vez de `alert()`.
 
 ## Limitações conhecidas / próximos passos
 

@@ -1,6 +1,11 @@
 const form = document.getElementById("upload-form");
 const fileInput = document.getElementById("file-input");
-const statusEl = document.getElementById("status");
+const dropzoneEl = document.getElementById("dropzone");
+const dropzoneFilenameEl = document.getElementById("dropzone-filename");
+const statusCardEl = document.getElementById("status-card");
+const statusTextEl = document.getElementById("status-text");
+const errorCardEl = document.getElementById("error-card");
+const errorTextEl = document.getElementById("error-text");
 const resultadoEl = document.getElementById("resultado");
 const badgeModoEl = document.getElementById("badge-modo");
 const avisoEl = document.getElementById("aviso");
@@ -11,6 +16,7 @@ const btnExcelEl = document.getElementById("btn-excel");
 const btnExtrairEl = document.getElementById("btn-extrair");
 
 let ultimoResultado = null;
+let arquivoSelecionado = null;
 
 const ROTULOS_METADADOS = {
   tipo_documento: "Tipo de documento",
@@ -22,18 +28,60 @@ const ROTULOS_METADADOS = {
   valor_total: "Valor total",
 };
 
+// ---------- Seleção de arquivo (clique ou arrastar) ----------
+
+fileInput.addEventListener("change", () => {
+  if (fileInput.files[0]) {
+    definirArquivo(fileInput.files[0]);
+  }
+});
+
+["dragenter", "dragover"].forEach((evento) => {
+  dropzoneEl.addEventListener(evento, (event) => {
+    event.preventDefault();
+    dropzoneEl.classList.add("is-dragover");
+  });
+});
+
+["dragleave", "dragend"].forEach((evento) => {
+  dropzoneEl.addEventListener(evento, () => {
+    dropzoneEl.classList.remove("is-dragover");
+  });
+});
+
+dropzoneEl.addEventListener("drop", (event) => {
+  event.preventDefault();
+  dropzoneEl.classList.remove("is-dragover");
+  const arquivo = event.dataTransfer.files[0];
+  if (arquivo) {
+    definirArquivo(arquivo);
+  }
+});
+
+function definirArquivo(arquivo) {
+  arquivoSelecionado = arquivo;
+  dropzoneFilenameEl.textContent = arquivo.name;
+  dropzoneFilenameEl.hidden = false;
+  esconderErro();
+}
+
+// ---------- Envio para extração ----------
+
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
 
-  const file = fileInput.files[0];
-  if (!file) return;
+  if (!arquivoSelecionado) {
+    mostrarErro("Selecione um arquivo PDF antes de extrair.");
+    return;
+  }
 
-  statusEl.textContent = "Extraindo...";
+  mostrarCarregando("Extraindo dados do documento…");
   resultadoEl.hidden = true;
+  esconderErro();
   btnExtrairEl.disabled = true;
 
   const formData = new FormData();
-  formData.append("file", file);
+  formData.append("file", arquivoSelecionado);
 
   try {
     const response = await fetch("/extract-document", {
@@ -48,10 +96,10 @@ form.addEventListener("submit", async (event) => {
 
     const resultado = await response.json();
     mostrarResultado(resultado);
-    statusEl.textContent = "";
   } catch (erro) {
-    statusEl.textContent = `Falha ao extrair: ${erro.message}`;
+    mostrarErro(`Falha ao extrair: ${erro.message}`);
   } finally {
+    esconderCarregando();
     btnExtrairEl.disabled = false;
   }
 });
@@ -79,11 +127,31 @@ btnExcelEl.addEventListener("click", async () => {
     link.click();
     URL.revokeObjectURL(url);
   } catch (erro) {
-    statusEl.textContent = `Falha ao gerar Excel: ${erro.message}`;
+    mostrarErro(`Falha ao gerar Excel: ${erro.message}`);
   } finally {
     btnExcelEl.disabled = false;
   }
 });
+
+// ---------- Estados visuais ----------
+
+function mostrarCarregando(texto) {
+  statusTextEl.textContent = texto;
+  statusCardEl.hidden = false;
+}
+
+function esconderCarregando() {
+  statusCardEl.hidden = true;
+}
+
+function mostrarErro(mensagem) {
+  errorTextEl.textContent = mensagem;
+  errorCardEl.hidden = false;
+}
+
+function esconderErro() {
+  errorCardEl.hidden = true;
+}
 
 function mostrarResultado(resultado) {
   ultimoResultado = resultado;
@@ -92,7 +160,12 @@ function mostrarResultado(resultado) {
     resultado.modo_extracao === "ia" ? "Modo: IA" : "Modo: Básico";
   badgeModoEl.className = `badge badge-${resultado.modo_extracao}`;
 
-  avisoEl.textContent = resultado.aviso || "";
+  if (resultado.aviso) {
+    avisoEl.textContent = resultado.aviso;
+    avisoEl.hidden = false;
+  } else {
+    avisoEl.hidden = true;
+  }
 
   preencherTabelaMetadados(resultado.documento);
   preencherTabelaItens(resultado.documento.itens);
@@ -101,54 +174,59 @@ function mostrarResultado(resultado) {
   resultadoEl.hidden = false;
 }
 
-function limparTabela(tabela) {
-  tabela.innerHTML = "";
-}
-
-function criarLinha(celulas) {
-  const tr = document.createElement("tr");
-  for (const texto of celulas) {
-    const td = document.createElement("td");
-    td.textContent = texto ?? "—";
-    tr.appendChild(td);
-  }
-  return tr;
-}
-
 function preencherTabelaMetadados(documento) {
-  limparTabela(tabelaMetadadosEl);
+  tabelaMetadadosEl.innerHTML = "";
   for (const [chave, rotulo] of Object.entries(ROTULOS_METADADOS)) {
-    tabelaMetadadosEl.appendChild(criarLinha([rotulo, documento[chave]]));
+    adicionarLinhaMetadado(rotulo, documento[chave]);
   }
   for (const extra of documento.campos_adicionais || []) {
-    tabelaMetadadosEl.appendChild(criarLinha([extra.campo, extra.valor]));
+    adicionarLinhaMetadado(extra.campo, extra.valor);
   }
+}
+
+function adicionarLinhaMetadado(rotulo, valor) {
+  const dt = document.createElement("dt");
+  dt.textContent = rotulo;
+  const dd = document.createElement("dd");
+  dd.textContent = valor ?? "—";
+  tabelaMetadadosEl.appendChild(dt);
+  tabelaMetadadosEl.appendChild(dd);
 }
 
 function preencherTabelaItens(itens) {
-  limparTabela(tabelaItensEl);
+  tabelaItensEl.innerHTML = "";
 
+  const thead = document.createElement("thead");
   const cabecalho = document.createElement("tr");
   for (const rotulo of ["Descrição", "Quantidade", "Valor unitário", "Valor total"]) {
     const th = document.createElement("th");
     th.textContent = rotulo;
     cabecalho.appendChild(th);
   }
-  tabelaItensEl.appendChild(cabecalho);
+  thead.appendChild(cabecalho);
+  tabelaItensEl.appendChild(thead);
+
+  const tbody = document.createElement("tbody");
+  tabelaItensEl.appendChild(tbody);
 
   if (!itens || itens.length === 0) {
     const tr = document.createElement("tr");
     const td = document.createElement("td");
     td.colSpan = 4;
+    td.className = "empty-state";
     td.textContent = "Nenhum item identificado.";
     tr.appendChild(td);
-    tabelaItensEl.appendChild(tr);
+    tbody.appendChild(tr);
     return;
   }
 
   for (const item of itens) {
-    tabelaItensEl.appendChild(
-      criarLinha([item.descricao, item.quantidade, item.valor_unitario, item.valor_total])
-    );
+    const tr = document.createElement("tr");
+    for (const texto of [item.descricao, item.quantidade, item.valor_unitario, item.valor_total]) {
+      const td = document.createElement("td");
+      td.textContent = texto ?? "—";
+      tr.appendChild(td);
+    }
+    tbody.appendChild(tr);
   }
 }

@@ -7,37 +7,99 @@
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <main>
-    <h1>Extrator Inteligente de Documentos</h1>
-    <p>Envie um PDF (nota fiscal, pedido de compra ou relatório) para extrair os dados.</p>
-
-    <form id="upload-form">
-      <input type="file" id="file-input" accept="application/pdf" required />
-      <button id="btn-extrair" type="submit">Extrair dados</button>
-    </form>
-
-    <p id="status"></p>
-
-    <section id="resultado" hidden>
-      <p>
-        <span id="badge-modo" class="badge"></span>
-        <span id="aviso" class="aviso"></span>
+  <div class="page">
+    <header class="page-header">
+      <h1>Extrator Inteligente de Documentos</h1>
+      <p class="subtitle">
+        Envie um PDF de nota fiscal, pedido de compra ou boleto e receba os
+        dados estruturados, prontos para exportar em Excel.
       </p>
+    </header>
 
-      <button id="btn-excel" type="button">Baixar Excel</button>
+    <main class="content">
+      <section class="card upload-card" aria-labelledby="upload-heading">
+        <h2 id="upload-heading" class="visually-hidden">Enviar documento</h2>
 
-      <h2>Dados do documento</h2>
-      <table id="tabela-metadados"></table>
+        <form id="upload-form" novalidate>
+          <label for="file-input" class="dropzone" id="dropzone">
+            <input
+              type="file"
+              id="file-input"
+              name="file"
+              accept="application/pdf"
+              class="visually-hidden"
+              aria-describedby="dropzone-hint"
+            />
+            <svg class="dropzone-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path
+                d="M12 16V4m0 0L7 9m5-5l5 5M5 20h14"
+                stroke="currentColor"
+                stroke-width="1.6"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </svg>
+            <p class="dropzone-title" id="dropzone-title">Arraste um PDF aqui</p>
+            <p class="dropzone-hint" id="dropzone-hint">ou clique para escolher um arquivo</p>
+            <p class="dropzone-filename" id="dropzone-filename" hidden></p>
+          </label>
 
-      <h2>Itens</h2>
-      <table id="tabela-itens"></table>
+          <button type="submit" class="btn btn-primary btn-block" id="btn-extrair">
+            Extrair dados
+          </button>
+        </form>
+      </section>
 
-      <details>
-        <summary>Ver JSON bruto</summary>
-        <pre id="json-bruto"></pre>
-      </details>
-    </section>
-  </main>
+      <section class="card status-card" id="status-card" hidden aria-live="polite">
+        <span class="spinner" aria-hidden="true"></span>
+        <p id="status-text">Extraindo dados do documento…</p>
+      </section>
+
+      <section class="card error-card" id="error-card" hidden role="alert">
+        <svg class="error-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.6" />
+          <path d="M12 8v5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+          <circle cx="12" cy="16" r="0.9" fill="currentColor" />
+        </svg>
+        <p id="error-text"></p>
+      </section>
+
+      <section class="card result-card" id="resultado" hidden aria-labelledby="resultado-heading">
+        <div class="result-header">
+          <div class="result-header-info">
+            <h2 id="resultado-heading" class="visually-hidden">Resultado da extração</h2>
+            <span id="badge-modo" class="badge"></span>
+            <p id="aviso" class="aviso" hidden></p>
+          </div>
+          <button type="button" class="btn btn-primary" id="btn-excel">
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path
+                d="M12 15V3m0 12l-4-4m4 4l4-4M5 21h14"
+                stroke="currentColor"
+                stroke-width="1.6"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </svg>
+            Baixar Excel
+          </button>
+        </div>
+
+        <h3 class="section-title">Dados do documento</h3>
+        <dl class="meta-grid" id="tabela-metadados"></dl>
+
+        <h3 class="section-title">Itens</h3>
+        <div class="table-wrap">
+          <table id="tabela-itens"></table>
+        </div>
+
+        <details class="raw-json">
+          <summary>Ver JSON bruto</summary>
+          <pre id="json-bruto"></pre>
+        </details>
+      </section>
+    </main>
+  </div>
 
   <script src="script.js"></script>
 </body>
