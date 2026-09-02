@@ -185,12 +185,17 @@ function preencherTabelaMetadados(documento) {
 }
 
 function adicionarLinhaMetadado(rotulo, valor) {
+  const campo = document.createElement("div");
+  campo.className = "meta-field";
+
   const dt = document.createElement("dt");
   dt.textContent = rotulo;
   const dd = document.createElement("dd");
   dd.textContent = valor ?? "—";
-  tabelaMetadadosEl.appendChild(dt);
-  tabelaMetadadosEl.appendChild(dd);
+
+  campo.appendChild(dt);
+  campo.appendChild(dd);
+  tabelaMetadadosEl.appendChild(campo);
 }
 
 function preencherTabelaItens(itens) {
