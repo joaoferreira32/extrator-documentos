@@ -68,7 +68,9 @@ async def extract_document(file: UploadFile):
             # Captura ampla e intencional: qualquer falha da IA (rede, auth,
             # rate limit, resposta fora do schema) deve cair para o modo
             # basico em vez de virar erro para quem esta usando o sistema.
-            documento = basic_extractor.extrair(resultado_texto.texto)
+            documento = basic_extractor.extrair_com_metadados(
+                resultado_texto.texto, resultado_texto.paginas_palavras
+            ).documento
             return ExtractionResult(
                 modo_extracao="basico",
                 origem_texto=resultado_texto.origem,
@@ -79,7 +81,9 @@ async def extract_document(file: UploadFile):
                 documento=documento,
             )
 
-    documento = basic_extractor.extrair(resultado_texto.texto)
+    documento = basic_extractor.extrair_com_metadados(
+        resultado_texto.texto, resultado_texto.paginas_palavras
+    ).documento
     return ExtractionResult(
         modo_extracao="basico", origem_texto=resultado_texto.origem, documento=documento
     )
@@ -113,6 +117,54 @@ async def debug_extract_text(file: UploadFile):
         "ocr_disponivel": resultado_texto.ocr_disponivel,
         "texto": resultado_texto.texto,
         "linhas": resultado_texto.texto.splitlines(),
+    }
+
+
+@app.post("/debug/extract-words")
+async def debug_extract_words(file: UploadFile):
+    """Endpoint de debug: devolve as palavras de cada pagina com sua
+    posicao (x0/x1/top/bottom), sem nenhuma extracao de campos em cima.
+    Usado para diagnosticar layouts em grade (ex: tabela de itens de uma
+    DANFE) antes de escrever a logica de reconstrucao por coordenadas --
+    texto corrido nao basta pra isso, precisa da posicao real de cada
+    palavra tal como o pdfplumber extraiu.
+
+    So funciona para PDFs com texto digital (nao PDF escaneado sem OCR
+    bem-sucedido) -- posicao de palavra so existe quando ha uma camada de
+    texto real no PDF."""
+    if file.content_type != "application/pdf":
+        raise HTTPException(status_code=400, detail="Envie um arquivo PDF.")
+
+    conteudo = await file.read()
+    if not conteudo:
+        raise HTTPException(status_code=400, detail="Arquivo vazio.")
+
+    try:
+        resultado_texto = pdf_extractor.extrair_texto(conteudo)
+    except Exception:
+        raise HTTPException(
+            status_code=400,
+            detail="Nao foi possivel ler este arquivo como PDF. Ele pode estar corrompido.",
+        )
+
+    if resultado_texto.paginas_palavras is None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Este PDF nao tem posicao de palavra disponivel (provavelmente "
+                "e uma imagem escaneada, sem camada de texto digital)."
+            ),
+        )
+
+    return {
+        "numero_paginas": resultado_texto.numero_paginas,
+        "paginas": [
+            [
+                {"texto": p.texto, "x0": p.x0, "x1": p.x1, "top": p.top, "bottom": p.bottom}
+                for p in pagina
+            ]
+            for pagina in resultado_texto.paginas_palavras
+        ],
     }
 
 

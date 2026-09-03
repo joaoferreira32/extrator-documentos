@@ -16,8 +16,11 @@ import sys
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
+from typing import Optional
 
 import pdfplumber
+
+from app.extractors.base import Palavra
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +60,13 @@ class TextoExtraido:
     ocr_disponivel: bool = True
     """False quando o Tesseract (ou as bibliotecas de OCR) nao estao
     instalados no sistema -- diferente de "OCR tentou e nao achou nada"."""
+    paginas_palavras: Optional[list[list[Palavra]]] = None
+    """Palavras posicionadas (x0/x1/top/bottom) de cada pagina, na mesma
+    passada do pdfplumber que extraiu o texto digital. None quando a
+    origem e "ocr" -- imagem escaneada nao tem posicao de palavra real,
+    so o texto que o Tesseract reconheceu. Extratores que reconstroem
+    tabela por coordenada (ex: DANFE) dependem disso e devem degradar
+    graciosamente quando for None."""
 
     @property
     def parece_escaneado(self) -> bool:
@@ -66,19 +76,40 @@ class TextoExtraido:
 
 
 def extrair_texto(conteudo_pdf: bytes) -> TextoExtraido:
-    """Le todas as paginas de um PDF e devolve o texto concatenado.
+    """Le todas as paginas de um PDF e devolve o texto concatenado (e, se
+    a origem for digital, as palavras posicionadas de cada pagina).
 
     Nao levanta excecao quando o PDF nao tem texto extraivel nem quando o
     OCR nao esta disponivel; quem chama deve checar `parece_escaneado` e
     `ocr_disponivel` e decidir a mensagem.
     """
     with pdfplumber.open(BytesIO(conteudo_pdf)) as pdf:
-        paginas_texto = [pagina.extract_text() or "" for pagina in pdf.pages]
+        paginas_texto = []
+        paginas_palavras = []
+        for pagina in pdf.pages:
+            paginas_texto.append(pagina.extract_text() or "")
+            paginas_palavras.append(
+                [
+                    Palavra(
+                        texto=palavra["text"],
+                        x0=palavra["x0"],
+                        x1=palavra["x1"],
+                        top=palavra["top"],
+                        bottom=palavra["bottom"],
+                    )
+                    for palavra in pagina.extract_words()
+                ]
+            )
         texto_digital = "\n".join(paginas_texto).strip()
         numero_paginas = len(pdf.pages)
 
     if len(texto_digital) >= TAMANHO_MINIMO_TEXTO_DIGITAL:
-        return TextoExtraido(texto=texto_digital, numero_paginas=numero_paginas, origem="digital")
+        return TextoExtraido(
+            texto=texto_digital,
+            numero_paginas=numero_paginas,
+            origem="digital",
+            paginas_palavras=paginas_palavras,
+        )
 
     texto_ocr, ocr_disponivel = _tentar_ocr(conteudo_pdf)
     if len(texto_ocr) > len(texto_digital):
@@ -87,6 +118,7 @@ def extrair_texto(conteudo_pdf: bytes) -> TextoExtraido:
             numero_paginas=numero_paginas,
             origem="ocr",
             ocr_disponivel=ocr_disponivel,
+            paginas_palavras=None,
         )
 
     return TextoExtraido(
@@ -94,6 +126,7 @@ def extrair_texto(conteudo_pdf: bytes) -> TextoExtraido:
         numero_paginas=numero_paginas,
         origem="digital",
         ocr_disponivel=ocr_disponivel,
+        paginas_palavras=paginas_palavras,
     )
 
 
