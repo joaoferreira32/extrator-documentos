@@ -24,7 +24,14 @@ ROTULOS_NUMERO_DOCUMENTO = [
     "Pedido de Compra Nº",
     "Pedido de Compra N.",
 ]
-ROTULOS_DATA_EMISSAO = ["Data de Emissão", "Data de Emissao", "Emissão", "Emissao"]
+ROTULOS_DATA_EMISSAO = [
+    "Data de Emissão",
+    "Data de Emissao",
+    "Data da Emissão",  # variante real de DANFE ("da", nao "de")
+    "Data da Emissao",
+    "Emissão",
+    "Emissao",
+]
 ROTULOS_VENCIMENTO = ["Vencimento"]
 
 TODOS_ROTULOS = (

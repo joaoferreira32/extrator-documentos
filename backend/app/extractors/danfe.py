@@ -30,6 +30,7 @@ import re
 from app.extractors import comum
 from app.extractors.base import ContextoExtracao, ExtratorDocumento, ResultadoExtracao
 from app.extractors.danfe_tabela import montar_tabela_itens
+from app.extractors.generico import TODOS_ROTULOS as _TODOS_ROTULOS_GENERICO
 from app.extractors.generico import GenericExtractor
 from app.schemas import CampoAdicional
 
@@ -47,12 +48,26 @@ MARCADORES_DETECCAO = [
 ROTULOS_VALOR_TOTAL_PRODUTOS = ["Valor Total dos Produtos", "Valor total dos produtos"]
 ROTULOS_VALOR_TOTAL_NOTA = ["Valor Total da Nota", "Valor total da nota", "Valor Total da NF-e"]
 
+# Rotulo real do campo de nome do destinatario numa DANFE (confirmado num
+# dump real via /debug/extract-text) -- diferente do generico
+# "Destinatário"/"Cliente" que o GenericExtractor usa, que nao aparece
+# nesse layout: a caixa do destinatario tem "NOME/RAZÃO SOCIAL" como
+# legenda, com o rotulo ANTES do valor (padrao normal, ja coberto pelo
+# fallback de proxima linha existente em localizar_rotulo).
+ROTULOS_DESTINATARIO_DANFE = ["Nome/Razão Social", "Nome/Razao Social"]
+TODOS_ROTULOS_DANFE = _TODOS_ROTULOS_GENERICO + ROTULOS_DESTINATARIO_DANFE
+
 # Chave de acesso: 44 digitos, geralmente impressos em grupos separados por
-# espaco/ponto. Aceita ate 90 caracteres de largura pra cobrir espacamento
-# generoso (confirmado num dump real: 11 blocos de 4 digitos separados por
-# espaco), e confirma o total de 44 digitos so depois de remover os
-# separadores.
-_CANDIDATO_CHAVE_RE = re.compile(r"\d[\d\s.]{40,90}\d")
+# espaco/ponto NA MESMA LINHA. Aceita ate 90 caracteres de largura pra
+# cobrir espacamento generoso (confirmado num dump real: 11 blocos de 4
+# digitos separados por espaco), e confirma o total de 44 digitos so
+# depois de remover os separadores. Usa " " (espaco), nao \s -- bug real:
+# \s tambem casa quebra de linha, entao o candidato "vazava" pra tras
+# pegando os ultimos digitos da linha anterior (ex: "...0010-01" seguido
+# de quebra de linha e a chave) quando essa linha anterior tambem termina
+# em digito, inflando a contagem pra mais de 44 e descartando a chave de
+# verdade.
+_CANDIDATO_CHAVE_RE = re.compile(r"\d[\d .]{40,90}\d")
 
 # Tolerancia de arredondamento na validacao da soma dos itens vs valor
 # total dos produtos.
@@ -101,6 +116,18 @@ class DanfeExtractor(ExtratorDocumento):
         resultado = GenericExtractor().extrair(contexto)
         resultado.documento.tipo_documento = "nota_fiscal"
 
+        emissor = self._extrair_emissor(contexto)
+        if emissor:
+            resultado.documento.emissor = emissor
+            resultado.confiancas["emissor"] = "alta"
+
+        destinatario = comum.extrair_entidade(
+            contexto.linhas, ROTULOS_DESTINATARIO_DANFE, TODOS_ROTULOS_DANFE
+        )
+        if destinatario:
+            resultado.documento.destinatario = destinatario
+            resultado.confiancas["destinatario"] = "alta"
+
         chave, confianca_chave = encontrar_chave_acesso(contexto.texto)
         if chave:
             resultado.documento.campos_adicionais.append(
@@ -116,8 +143,12 @@ class DanfeExtractor(ExtratorDocumento):
         # "Valor Total da Nota" e o rotulo padronizado nacionalmente pro
         # valor total do documento -- mais confiavel que o fallback
         # generico (que exige "R$" na frente do valor, mas uma DANFE
-        # normalmente imprime so o numero, sem o simbolo).
-        valor_total_bruto = comum.extrair_valor_rotulo(contexto.texto, ROTULOS_VALOR_TOTAL_NOTA)
+        # normalmente imprime so o numero, sem o simbolo). preferir_linha_
+        # anterior=True porque a grade de totais real imprime o valor
+        # ACIMA da legenda, nao abaixo (ver docstring de extrair_valor_rotulo).
+        valor_total_bruto = comum.extrair_valor_rotulo(
+            contexto.texto, ROTULOS_VALOR_TOTAL_NOTA, preferir_linha_anterior=True
+        )
         if valor_total_bruto:
             resultado.documento.valor_total = comum.para_numero(valor_total_bruto)
             resultado.confiancas["valor_total"] = "alta"
@@ -132,6 +163,35 @@ class DanfeExtractor(ExtratorDocumento):
         # o erro de supor layout sem material real.
 
         return resultado
+
+    def _extrair_emissor(self, contexto: ContextoExtracao) -> str | None:
+        """O nome do emitente numa DANFE aparece nas primeiras linhas do
+        documento, ANTES de qualquer rotulo -- confirmado num dump real
+        via /debug/extract-text. A legenda "Identificação do Emitente"
+        funciona como legenda por baixo da caixa (mesmo padrao de "VALOR
+        TOTAL DA NOTA"), entao buscar por rotulo generico
+        ("Emitente"/"Fornecedor", como o GenericExtractor faz) e o que
+        causava o bug real: a legenda batia com o rotulo, mas a linha
+        seguinte pertencia a uma caixa vizinha (o titulo "DANFE"), nao ao
+        emitente de verdade. Pular linhas que sao o proprio marcador de
+        titulo da DANFE evita reincidir nesse bug caso o nome nao seja
+        mesmo a primeira linha em algum layout."""
+        for i, linha in enumerate(contexto.linhas):
+            candidato = linha.strip()
+            if not candidato:
+                continue
+            if any(marcador in candidato.lower() for marcador in MARCADORES_DETECCAO):
+                continue
+            if not comum.parece_nome(candidato):
+                continue
+            # janela maior que o default (3): confirmado num dump real que
+            # o CNPJ do emitente vem depois do bloco de endereco (nome,
+            # rua, bairro/CEP, municipio/UF -- ate 7 linhas antes do CNPJ).
+            documento_fiscal = comum.documento_fiscal_proximo(contexto.linhas, i, janela=10)
+            if documento_fiscal and documento_fiscal.split()[-1] not in candidato:
+                return f"{candidato} ({documento_fiscal})"
+            return candidato
+        return None
 
     def _extrair_tabela_itens(self, contexto: ContextoExtracao, resultado: ResultadoExtracao) -> None:
         tabela = montar_tabela_itens(contexto.paginas_palavras)
@@ -148,7 +208,7 @@ class DanfeExtractor(ExtratorDocumento):
             resultado.confiancas["CFOP"] = "media"
 
         valor_total_produtos_bruto = comum.extrair_valor_rotulo(
-            contexto.texto, ROTULOS_VALOR_TOTAL_PRODUTOS
+            contexto.texto, ROTULOS_VALOR_TOTAL_PRODUTOS, preferir_linha_anterior=True
         )
         if valor_total_produtos_bruto is None or tabela.soma_valor_total is None:
             return

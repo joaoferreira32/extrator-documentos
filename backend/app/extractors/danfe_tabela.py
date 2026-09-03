@@ -51,6 +51,21 @@ _X0_MIN_TEXTO_VERTICAL = 15
 _X0_MAX_TEXTO_VERTICAL = 85
 _RAZAO_ALTURA_LARGURA_MINIMA = 2.0
 
+# Titulos de secao padronizados nacionalmente (Manual de Orientacao do
+# Contribuinte) que vem DEPOIS da tabela de itens em qualquer DANFE --
+# nao e suposicao de layout de um emissor especifico. Bug real: com o
+# limite inferior da primeira coluna em -inf (ver _limites_colunas), texto
+# de margem esquerda desse bloco (ex: "INFORMAÇÕES COMPLEMENTARES") caia
+# dentro da faixa x da coluna CODIGO e virava uma sequencia de itens
+# fantasmas -- por isso o corte e por CONTEUDO da linha, checado antes de
+# qualquer classificacao por coluna, nao por posicao vertical fixa (que
+# varia de layout pra layout).
+MARCADORES_FIM_TABELA = [
+    "informações complementares",
+    "informacoes complementares",
+    "dados adicionais",
+]
+
 
 def _eh_texto_vertical(p: Palavra) -> bool:
     largura = p.x1 - p.x0
@@ -170,6 +185,16 @@ def _tipo_linha(valores_coluna: dict[str, list[Palavra]]) -> str:
     return "fim"
 
 
+def _linha_e_marcador_fim(linha: list[Palavra]) -> bool:
+    """True quando a linha e o titulo de uma secao que vem depois da
+    tabela de itens (ver MARCADORES_FIM_TABELA) -- checa o CONTEUDO da
+    linha inteira, nao a coluna de uma palavra isolada, porque o titulo
+    pode ter varias palavras espalhadas por colunas diferentes da
+    tabela."""
+    texto_linha = " ".join(p.texto for p in linha).lower()
+    return any(marcador in texto_linha for marcador in MARCADORES_FIM_TABELA)
+
+
 def _separar_valores_colados(texto: str) -> list[str]:
     """Uma coluna estreita pode fazer o pdfplumber juntar dois valores
     monetarios num so token sem espaco entre eles (ex: "13,9718,00" =
@@ -229,6 +254,9 @@ def montar_tabela_itens(paginas_palavras: list[list[Palavra]]) -> TabelaItensRes
         for linha in linhas:
             if linha[0].top <= top_cabecalho:
                 continue  # cabecalho ou algo acima dele
+
+            if _linha_e_marcador_fim(linha):
+                break  # secao seguinte (ex: informacoes complementares) -- tabela acabou
 
             valores_coluna: dict[str, list[Palavra]] = {}
             for p in linha:

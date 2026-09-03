@@ -21,7 +21,10 @@ logger = logging.getLogger(__name__)
 # capturado passa por `corrigir_confusao_ocr` antes de ser usado.
 _DIG = "0-9OoIiSs"
 
-DATA_RE = re.compile(r"\b(\d{2}[/-]\d{2}[/-]\d{4})\b")
+# Dia/mes com 1 ou 2 digitos -- confirmado num dump real de DANFE
+# ("15/4/2026", mes sem zero a esquerda). Exigir \d{2} rejeitava datas
+# validas com um digito so.
+DATA_RE = re.compile(r"\b(\d{1,2}[/-]\d{1,2}[/-]\d{4})\b")
 VALOR_RE = re.compile(rf"R\$\s*([{_DIG}]{{1,3}}(?:\.[{_DIG}]{{3}})*,[{_DIG}]{{2}})")
 # Valor monetario BR sem exigir prefixo "R$" -- boletos/DANFE costumam
 # mostrar o valor sem o "R$" na frente em varios campos.
@@ -79,11 +82,26 @@ def contar_digitos(s: str) -> int:
     return sum(ch.isdigit() for ch in s)
 
 
-def extrair_valor_rotulo(texto: str, rotulos: list[str]) -> Optional[str]:
+def extrair_valor_rotulo(
+    texto: str, rotulos: list[str], preferir_linha_anterior: bool = False
+) -> Optional[str]:
     """Procura um rotulo de valor monetario (ex: "Desconto", "Valor a
-    Pagar", "Valor do ICMS") e o numero BR logo depois dele na mesma linha
-    -- com ou sem "R$"/"=" no meio."""
-    for linha in texto.splitlines():
+    Pagar", "Valor do ICMS") e o numero BR mais proximo dele: primeiro na
+    mesma linha (com ou sem "R$"/"=" no meio), senao numa linha vizinha.
+
+    `preferir_linha_anterior` controla a ORDEM da busca nas vizinhas
+    (anterior primeiro vs seguinte primeiro) -- nao da pra tentar as duas
+    e aceitar "a que bater", porque numa grade de totais tipo DANFE toda
+    linha vizinha a um rotulo tem algum valor monetario (e o campo
+    ANTERIOR ou o campo SEGUINTE da grade), entao teria sempre um "falso
+    positivo" disponivel dos dois lados. Documento real confirmado: DANFE
+    imprime o valor ACIMA da legenda (ex: "229,00" na linha logo antes de
+    "VALOR TOTAL DA NOTA", e a linha DEPOIS pertence ao PROXIMO campo da
+    grade, nao a este) -- inverso do padrao "rotulo: valor"/"rotulo entao
+    valor" que boleto usa. Default False preserva a ordem original
+    (seguinte primeiro), que e o comportamento ja testado do boleto."""
+    linhas = texto.splitlines()
+    for i, linha in enumerate(linhas):
         linha_lower = linha.lower()
         for rotulo in rotulos:
             idx = linha_lower.find(rotulo.lower())
@@ -93,6 +111,13 @@ def extrair_valor_rotulo(texto: str, rotulos: list[str]) -> Optional[str]:
             m = VALOR_NUM_RE.search(resto)
             if m:
                 return corrigir_confusao_ocr(m.group(1))
+
+            ordem = (i - 1, i + 1) if preferir_linha_anterior else (i + 1, i - 1)
+            for j in ordem:
+                if 0 <= j < len(linhas):
+                    m = VALOR_NUM_RE.search(linhas[j])
+                    if m:
+                        return corrigir_confusao_ocr(m.group(1))
     return None
 
 
