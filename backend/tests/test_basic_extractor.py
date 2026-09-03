@@ -38,3 +38,23 @@ def test_boleto_real_anonimizado(caplog):
     assert campos.get("Nosso Número") == "10200000001-9", (
         f"nosso_numero errado: {campos.get('Nosso Número')!r}"
     )
+
+
+def test_corrige_confusao_ocr_em_cnpj():
+    """OCR troca com frequencia O<->0, I<->1, S<->5 em campos numericos."""
+    texto = "Beneficiário: Empresa Teste Ltda\nCNPJ: 12.34S.678/OOO1-9I"
+    doc = basic_extractor.extrair(texto)
+    assert doc.emissor == "Empresa Teste Ltda (CNPJ 12.345.678/0001-91)"
+
+
+def test_corrige_confusao_ocr_em_cpf():
+    texto = "Pagador Fulano de Tal CPF: I11.222.333-44"
+    doc = basic_extractor.extrair(texto)
+    assert doc.destinatario == "Fulano de Tal (CPF 111.222.333-44)"
+
+
+def test_corrige_confusao_ocr_em_valor():
+    valor = basic_extractor._extrair_valor_rotulo(
+        "Valor a Pagar = R$ 9OO,OO", basic_extractor.ROTULOS_VALOR_A_PAGAR
+    )
+    assert valor == "900,00"

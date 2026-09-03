@@ -39,5 +39,6 @@ class DocumentoExtraido(BaseModel):
 
 class ExtractionResult(BaseModel):
     modo_extracao: str  # "basico" ou "ia"
+    origem_texto: str = "digital"  # "digital" (pdfplumber) ou "ocr" (Tesseract)
     aviso: Optional[str] = None  # informativo, nao e erro (ex: PDF escaneado, fallback IA -> basico)
     documento: DocumentoExtraido

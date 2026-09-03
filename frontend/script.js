@@ -8,6 +8,7 @@ const errorCardEl = document.getElementById("error-card");
 const errorTextEl = document.getElementById("error-text");
 const resultadoEl = document.getElementById("resultado");
 const badgeModoEl = document.getElementById("badge-modo");
+const badgeOrigemEl = document.getElementById("badge-origem");
 const avisoEl = document.getElementById("aviso");
 const jsonBrutoEl = document.getElementById("json-bruto");
 const tabelaMetadadosEl = document.getElementById("tabela-metadados");
@@ -159,6 +160,9 @@ function mostrarResultado(resultado) {
   badgeModoEl.textContent =
     resultado.modo_extracao === "ia" ? "Modo: IA" : "Modo: Básico";
   badgeModoEl.className = `badge badge-${resultado.modo_extracao}`;
+
+  badgeOrigemEl.textContent =
+    resultado.origem_texto === "ocr" ? "Leitura: OCR" : "Leitura: Digital";
 
   if (resultado.aviso) {
     avisoEl.textContent = resultado.aviso;

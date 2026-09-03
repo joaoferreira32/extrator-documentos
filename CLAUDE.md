@@ -8,7 +8,9 @@ de Engenharia da Computação).
 ## Stack
 
 - Backend: Python 3 + FastAPI
-- Extração de PDF: pdfplumber
+- Extração de PDF: pdfplumber (texto digital) + PyMuPDF (rasterizar página
+  para imagem) + Tesseract via `pytesseract` (OCR, dependência de sistema
+  externa e opcional)
 - Excel: pandas + openpyxl
 - LLM (opcional): Anthropic Claude (`anthropic` SDK), modelo `claude-sonnet-5`,
   via `client.messages.parse(output_format=...)` (Structured Outputs)
@@ -21,13 +23,14 @@ backend/app/
   main.py            # FastAPI app, rotas, serve frontend/ como estático
   config.py          # carrega ANTHROPIC_API_KEY (opcional) do .env
   schemas.py         # Pydantic: DocumentoExtraido, ExtractionResult, etc.
-  pdf_extractor.py    # texto do PDF via pdfplumber + detecção de PDF escaneado
+  pdf_extractor.py    # texto: pdfplumber (digital) -> OCR (Tesseract) se vazio/curto
   basic_extractor.py  # extração heurística por regex (modo "basico")
   llm_extractor.py    # extração via Claude (modo "ia", opcional)
   excel_exporter.py   # ExtractionResult -> .xlsx
 backend/tests/
   fixtures/boleto_real_anonimizado.txt  # texto bruto de boleto real (dados trocados)
   test_basic_extractor.py               # roda o extrator sobre a fixture acima
+  test_pdf_extractor.py                 # orquestracao digital->OCR (mocks) + 1 teste OCR real (skip se indisponivel)
 frontend/
   index.html, style.css, script.js
 ```
@@ -102,12 +105,58 @@ A IA é um **upgrade opcional**, não um requisito de funcionamento:
 - **Nunca é erro não ter `ANTHROPIC_API_KEY` configurada.** O endpoint
   `/extract-document` sempre responde 200 com algum resultado — a distinção
   de modo/qualidade vai no campo `modo_extracao`, não em status de erro.
-- PDF escaneado (sem texto extraível) também não é erro: retorna aviso
-  específico. OCR está fora do escopo do MVP (ver TODO em `pdf_extractor.py`).
+- PDF escaneado (sem texto extraível) também não é erro: aciona OCR
+  automaticamente e, se mesmo assim não conseguir texto, retorna aviso
+  específico.
 
 `DocumentoExtraido` é o mesmo contrato de dados nos dois modos — é o que
 permite tabela e exportação Excel funcionarem igual independente de como o
 documento foi extraído.
+
+## OCR (fallback digital -> imagem)
+
+`pdf_extractor.extrair_texto()` sempre tenta o texto digital do
+pdfplumber primeiro. Só aciona OCR quando esse texto vem vazio ou tem
+menos de `TAMANHO_MINIMO_TEXTO_DIGITAL` (20) caracteres — PDFs escaneados
+às vezes têm um carimbo ou timestamp real misturado na imagem, e 20
+caracteres é pouco pra confiar como "documento com texto de verdade".
+Texto de OCR passa pelo **mesmo** `basic_extractor`/modo IA de sempre —
+não existe lógica de extração de campos duplicada para OCR.
+
+- **PyMuPDF em vez de `pdf2image`/Wand para rasterizar página→imagem:**
+  ambos exigiriam mais um binário de sistema (Poppler ou ImageMagick)
+  além do próprio Tesseract. PyMuPDF instala só com `pip`, então OCR
+  precisa de exatamente uma dependência externa (o Tesseract), não duas.
+  Import é `import pymupdf` (não `import fitz` — nome antigo, gera
+  warning de depreciação).
+- **OCR nunca pode quebrar o app.** `_tentar_ocr()` devolve
+  `("", False)` — nunca levanta exceção — em qualquer cenário de falha:
+  bibliotecas não instaladas (`ImportError` no topo do módulo),
+  `pytesseract.TesseractNotFoundError` (Tesseract não instalado), ou
+  qualquer outro erro (ex: pacote de idioma `por` ausente — vira
+  `TesseractError` genérico, capturado pelo `except Exception` catch-all).
+  `TextoExtraido.ocr_disponivel` distingue "OCR não disponível" de "OCR
+  tentou e não achou nada" — `main.py` usa isso pra escolher a mensagem
+  de aviso certa.
+- **Instalador do Tesseract para Windows não adiciona o binário ao
+  PATH.** Sem isso, `pytesseract` levanta `TesseractNotFoundError` mesmo
+  com o Tesseract instalado, confundindo "não instalado" com "instalado
+  mas não configurado". `pdf_extractor.py` detecta isso
+  (`shutil.which("tesseract") is None` em `sys.platform == "win32"`) e
+  tenta o caminho padrão do instalador
+  (`C:\Program Files\Tesseract-OCR\tesseract.exe`) antes de desistir.
+- **Instalação via `winget` (silenciosa) não traz o pacote de idioma
+  português** (`por.traineddata`) — só o inglês vem por padrão. Testado
+  de verdade: sem esse arquivo em `...\Tesseract-OCR\tessdata\`,
+  `pytesseract` levanta `TesseractError` ("Failed loading language
+  'por'"), corretamente capturado como `ocr_disponivel=False`. Ver
+  instruções de instalação no README.
+- **Confusão de caracteres do OCR** (`O`/`0`, `I`/`1`, `S`/`5`) é
+  corrigida só em campos que a regex **já** identificou como numéricos
+  (CNPJ, CPF, valores) — `_DIG = "0-9OoIiSs"` substitui `\d` nessas
+  regex especificamente, e `_corrigir_confusao_ocr()` normaliza o trecho
+  capturado antes de usar. Aplicar a correção no texto inteiro
+  destruiria palavras normais que por acaso tenham essas letras.
 
 ## Convenções
 
@@ -156,6 +205,16 @@ aceito ou rejeitado para cada campo — o teste imprime esse log com
 `caplog`, então dá pra ver exatamente onde a extração está acertando ou
 errando sem precisar adivinhar.
 
+`tests/test_pdf_extractor.py` testa a orquestração digital->OCR com
+mocks (`monkeypatch` em `_tentar_ocr`/`_OCR_IMPORTADO`), então passa
+independente de o Tesseract estar instalado na máquina que roda os
+testes. O último teste do arquivo (`test_ocr_real_extrai_texto...`) usa
+OCR de verdade e só roda quando `_ocr_real_disponivel()` confirma que o
+Tesseract + idioma `por` estão realmente disponíveis — pulado (não
+falha) caso contrário. Os testes de confusão de OCR
+(`test_corrige_confusao_ocr_*` em `test_basic_extractor.py`) são puros
+(sem dependência externa).
+
 ## Estado atual / próximas etapas
 
 MVP funcional de ponta a ponta (testado no navegador via Playwright):
@@ -174,11 +233,12 @@ histórico do projeto foram diagnosticados e corrigidos.
 
 Não implementado ainda / possíveis próximos passos:
 
-- OCR para PDFs escaneados (`TODO` em `backend/app/pdf_extractor.py`).
 - Modo básico não reconstrói tabela de itens (só o modo IA faz isso hoje).
-- Só há um fixture de teste automatizado (um boleto real anonimizado). Vale
-  adicionar mais fixtures reais (nota fiscal, pedido de compra) conforme
-  aparecerem casos.
+- Correção de confusão de OCR cobre só CNPJ/CPF/valores — não
+  numero_documento/Nosso Número nem texto livre (emissor/destinatario).
+- Só há um fixture de teste automatizado com texto real (um boleto
+  anonimizado). Vale adicionar mais fixtures reais (nota fiscal, pedido de
+  compra) conforme aparecerem casos.
 
 Plano original com todas as etapas em
 `C:\Users\User\.claude\plans\jazzy-foraging-harbor.md`.

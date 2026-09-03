@@ -40,19 +40,30 @@ async def extract_document(file: UploadFile):
         )
 
     if resultado_texto.parece_escaneado:
+        if resultado_texto.ocr_disponivel:
+            aviso = (
+                "Este PDF parece ser uma imagem escaneada e o OCR nao "
+                "conseguiu extrair texto legivel dele."
+            )
+        else:
+            aviso = (
+                "Este PDF parece ser uma imagem escaneada. OCR nao esta "
+                "disponivel neste momento (Tesseract nao encontrado no "
+                "sistema) -- veja o README para instalar."
+            )
         return ExtractionResult(
             modo_extracao="basico",
-            aviso=(
-                "Este PDF parece ser uma imagem escaneada (sem texto "
-                "extraivel). OCR nao esta incluido neste MVP."
-            ),
+            origem_texto=resultado_texto.origem,
+            aviso=aviso,
             documento=basic_extractor.extrair(""),
         )
 
     if config.ia_disponivel():
         try:
             documento = llm_extractor.extrair(resultado_texto.texto)
-            return ExtractionResult(modo_extracao="ia", documento=documento)
+            return ExtractionResult(
+                modo_extracao="ia", origem_texto=resultado_texto.origem, documento=documento
+            )
         except Exception as exc:
             # Captura ampla e intencional: qualquer falha da IA (rede, auth,
             # rate limit, resposta fora do schema) deve cair para o modo
@@ -60,6 +71,7 @@ async def extract_document(file: UploadFile):
             documento = basic_extractor.extrair(resultado_texto.texto)
             return ExtractionResult(
                 modo_extracao="basico",
+                origem_texto=resultado_texto.origem,
                 aviso=(
                     f"Extracao por IA indisponivel no momento "
                     f"({type(exc).__name__}), usando modo basico."
@@ -68,7 +80,9 @@ async def extract_document(file: UploadFile):
             )
 
     documento = basic_extractor.extrair(resultado_texto.texto)
-    return ExtractionResult(modo_extracao="basico", documento=documento)
+    return ExtractionResult(
+        modo_extracao="basico", origem_texto=resultado_texto.origem, documento=documento
+    )
 
 
 @app.post("/debug/extract-text")
@@ -95,6 +109,8 @@ async def debug_extract_text(file: UploadFile):
     return {
         "numero_paginas": resultado_texto.numero_paginas,
         "parece_escaneado": resultado_texto.parece_escaneado,
+        "origem": resultado_texto.origem,
+        "ocr_disponivel": resultado_texto.ocr_disponivel,
         "texto": resultado_texto.texto,
         "linhas": resultado_texto.texto.splitlines(),
     }

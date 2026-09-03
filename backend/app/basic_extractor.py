@@ -23,13 +23,20 @@ from app.schemas import CampoAdicional, DocumentoExtraido
 
 logger = logging.getLogger(__name__)
 
+# OCR confunde com frequencia certas letras com digitos parecidos
+# (O/o<->0, I/i<->1, S/s<->5). Campos que devem ser puramente numericos
+# (CNPJ, CPF, valores) usam essa classe no lugar de \d para nao perder o
+# campo inteiro so porque um caractere saiu errado do Tesseract; o valor
+# capturado passa por `_corrigir_confusao_ocr` antes de ser usado.
+_DIG = "0-9OoIiSs"
+
 DATA_RE = re.compile(r"\b(\d{2}[/-]\d{2}[/-]\d{4})\b")
-VALOR_RE = re.compile(r"R\$\s*([\d.]+,\d{2})")
+VALOR_RE = re.compile(rf"R\$\s*([{_DIG}]{{1,3}}(?:\.[{_DIG}]{{3}})*,[{_DIG}]{{2}})")
 # Valor monetario BR sem exigir prefixo "R$" -- boletos costumam mostrar
 # "Valor Documento 1.000,00" sem o "R$" na frente.
-VALOR_NUM_RE = re.compile(r"(\d{1,3}(?:\.\d{3})*,\d{2})")
-CNPJ_RE = re.compile(r"\b\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}\b")
-CPF_RE = re.compile(r"\b\d{3}\.\d{3}\.\d{3}-\d{2}\b")
+VALOR_NUM_RE = re.compile(rf"([{_DIG}]{{1,3}}(?:\.[{_DIG}]{{3}})*,[{_DIG}]{{2}})")
+CNPJ_RE = re.compile(rf"\b[{_DIG}]{{2}}\.[{_DIG}]{{3}}\.[{_DIG}]{{3}}/[{_DIG}]{{4}}-[{_DIG}]{{2}}\b")
+CPF_RE = re.compile(rf"\b[{_DIG}]{{3}}\.[{_DIG}]{{3}}\.[{_DIG}]{{3}}-[{_DIG}]{{2}}\b")
 # "Nosso Número" as vezes vem como "02 / 10200000001-9" -- os digitos
 # antes da barra sao so um prefixo/carteira, o numero real e depois dela.
 NUMERO_COM_BARRA_RE = re.compile(r"(\d[\d.\-]*)\s*/\s*(\d[\d.\-]*)")
@@ -122,6 +129,18 @@ PALAVRAS_CHAVE_TIPO = [
 ]
 
 
+_TABELA_CONFUSAO_OCR = str.maketrans({"O": "0", "o": "0", "I": "1", "i": "1", "S": "5", "s": "5"})
+
+
+def _corrigir_confusao_ocr(texto: str) -> str:
+    """Corrige as confusoes mais comuns do OCR em campos que ja sabemos
+    que devem ser puramente numericos (CNPJ, CPF, valores): O/o -> 0,
+    I/i -> 1, S/s -> 5. So chamar sobre um trecho ja identificado como
+    numerico por regex -- aplicar isso no texto inteiro destruiria
+    palavras normais."""
+    return texto.translate(_TABELA_CONFUSAO_OCR)
+
+
 def para_numero(bruto: str) -> float | str:
     """Converte um valor no formato BR ("1.234,56") para float; devolve a
     string original quando a conversao falha."""
@@ -157,7 +176,7 @@ def _extrair_valor_rotulo(texto: str, rotulos: list[str]) -> Optional[str]:
             resto = linha[idx + len(rotulo) :]
             m = VALOR_NUM_RE.search(resto)
             if m:
-                return m.group(1)
+                return _corrigir_confusao_ocr(m.group(1))
     return None
 
 
@@ -173,9 +192,9 @@ def _valor_total(texto: str) -> Optional[str]:
         if "total" in linha.lower():
             m = VALOR_RE.search(linha)
             if m:
-                return m.group(1)
+                return _corrigir_confusao_ocr(m.group(1))
     ocorrencias = VALOR_RE.findall(texto)
-    return ocorrencias[-1] if ocorrencias else None
+    return _corrigir_confusao_ocr(ocorrencias[-1]) if ocorrencias else None
 
 
 def _linha_digitavel(texto: str) -> Optional[str]:
@@ -354,10 +373,10 @@ def _documento_fiscal_proximo(linhas: list[str], indice: int, janela: int = 3) -
     trecho = " ".join(linhas[indice : indice + janela])
     m = CNPJ_RE.search(trecho)
     if m:
-        return f"CNPJ {m.group(0)}"
+        return f"CNPJ {_corrigir_confusao_ocr(m.group(0))}"
     m = CPF_RE.search(trecho)
     if m:
-        return f"CPF {m.group(0)}"
+        return f"CPF {_corrigir_confusao_ocr(m.group(0))}"
     return None
 
 
