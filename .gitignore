@@ -19,3 +19,5 @@ Thumbs.db
 
 # Artefatos gerados
 *.xlsx
+backend/pagina_teste_ocr.png
+backend/sample_escaneado_teste.pdf
