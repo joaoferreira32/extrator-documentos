@@ -1,34 +1,35 @@
 """DanfeExtractor: extracao de campos de DANFE (Documento Auxiliar da Nota
 Fiscal Eletronica).
 
-ESTADO ATUAL (etapa 1-2 do plano, antes do dump real de uma DANFE via
-`/debug/extract-words`): so implementa o que NAO depende de suposicao de
-layout --
-
-- Deteccao por marcador (palavra-chave no texto): mecanismo identico ao
-  que ja existia no basic_extractor.py monolitico, so que agora escopado
-  nesta classe.
+- Deteccao por marcador (palavra-chave no texto).
 - Validacao da chave de acesso (44 digitos + digito verificador modulo
-  11): e um algoritmo publico e padronizado pela SEFAZ, nao uma suposicao
-  de como o pdfplumber extrai o texto de uma DANFE especifica -- da pra
-  implementar com confianca sem ver um documento real.
+  11): algoritmo publico e padronizado pela SEFAZ, nao depende de layout.
+- Tabela de itens por coordenadas (`danfe_tabela.py`), quando o PDF tem
+  palavras posicionadas disponiveis (`contexto.paginas_palavras` -- None
+  quando a origem e OCR, que nao tem posicao confiavel de palavra). A
+  estrutura de colunas foi confirmada com um dump real via
+  `/debug/extract-words` (nota fiscal da Dell), nao suposta.
+- CFOP predominante: moda dos CFOPs encontrados nas linhas da tabela.
+- Validacao cruzada: soma dos `valor_total` dos itens comparada com
+  "Valor Total dos Produtos" (rotulo padronizado nacionalmente pelo
+  Manual de Orientacao do Contribuinte -- nao e suposicao de layout de um
+  emissor especifico, e um campo obrigatorio em toda DANFE). Se nao
+  bater, gera aviso em vez de devolver a tabela calada.
 
-Os campos especificos de DANFE pedidos (numero da NF por rotulo dedicado,
-serie, natureza da operacao, CFOP predominante, datas, ICMS, frete, e
-principalmente a tabela de itens por coordenadas) dependem de como o
-pdfplumber realmente linhariza o layout em grade de uma DANFE real -- já
-foi bug real nesse projeto (boleto) confiar em suposicao de layout em vez
-de material real, entao esses campos ficam para a proxima etapa, apos o
-dump de `/debug/extract-words`.
+Campos fiscais que ainda dependem de confirmar o rotulo exato num dump
+real (serie, natureza da operacao, data de saida, IE do emitente, base de
+calculo e valor do ICMS/frete como campos de documento) ficam para uma
+proxima iteracao -- ver TODO no fim do arquivo.
 
-Enquanto isso, reaproveita `GenericExtractor` para os campos universais
-(emissor, destinatario, numero_documento, data_emissao, valor_total) --
-mesma qualidade que uma DANFE ja tinha antes desta refatoracao (fallback
-generico), sem regressao. So adiciona chave de acesso por cima.
+Reaproveita `GenericExtractor` para os campos universais (emissor,
+destinatario, numero_documento, data_emissao, valor_total) -- mesma
+qualidade que uma DANFE ja tinha antes desta refatoracao, sem regressao.
 """
 import re
 
+from app.extractors import comum
 from app.extractors.base import ContextoExtracao, ExtratorDocumento, ResultadoExtracao
+from app.extractors.danfe_tabela import montar_tabela_itens
 from app.extractors.generico import GenericExtractor
 from app.schemas import CampoAdicional
 
@@ -43,11 +44,19 @@ MARCADORES_DETECCAO = [
     "cfop",
 ]
 
+ROTULOS_VALOR_TOTAL_PRODUTOS = ["Valor Total dos Produtos", "Valor total dos produtos"]
+ROTULOS_VALOR_TOTAL_NOTA = ["Valor Total da Nota", "Valor total da nota", "Valor Total da NF-e"]
+
 # Chave de acesso: 44 digitos, geralmente impressos em grupos separados por
-# espaco/ponto. Aceita ate 80 caracteres de largura pra cobrir espacamento
-# generoso, e confirma o total de 44 digitos so depois de remover os
+# espaco/ponto. Aceita ate 90 caracteres de largura pra cobrir espacamento
+# generoso (confirmado num dump real: 11 blocos de 4 digitos separados por
+# espaco), e confirma o total de 44 digitos so depois de remover os
 # separadores.
 _CANDIDATO_CHAVE_RE = re.compile(r"\d[\d\s.]{40,90}\d")
+
+# Tolerancia de arredondamento na validacao da soma dos itens vs valor
+# total dos produtos.
+_TOLERANCIA_SOMA = 0.02
 
 
 def _digito_verificador(chave_43_digitos: str) -> str:
@@ -104,10 +113,53 @@ class DanfeExtractor(ExtratorDocumento):
                     "verificador nao confere -- confira manualmente."
                 )
 
-        # TODO (etapa 3, apos dump real via /debug/extract-words): numero
-        # da NF/serie/natureza da operacao por rotulo dedicado, CFOP
-        # predominante, data de saida, IE do emitente, base de calculo e
-        # valor do ICMS, valor dos produtos, valor do frete, e a tabela de
-        # itens por coordenadas (danfe_tabela.py, ainda nao existe).
+        # "Valor Total da Nota" e o rotulo padronizado nacionalmente pro
+        # valor total do documento -- mais confiavel que o fallback
+        # generico (que exige "R$" na frente do valor, mas uma DANFE
+        # normalmente imprime so o numero, sem o simbolo).
+        valor_total_bruto = comum.extrair_valor_rotulo(contexto.texto, ROTULOS_VALOR_TOTAL_NOTA)
+        if valor_total_bruto:
+            resultado.documento.valor_total = comum.para_numero(valor_total_bruto)
+            resultado.confiancas["valor_total"] = "alta"
+
+        if contexto.paginas_palavras:
+            self._extrair_tabela_itens(contexto, resultado)
+
+        # TODO: numero de serie, natureza da operacao, data de saida, IE
+        # do emitente, e os campos de ICMS/frete como valores de
+        # documento (nao agregados da tabela) -- precisam do rotulo exato
+        # confirmado num dump real antes de implementar, pra nao repetir
+        # o erro de supor layout sem material real.
 
         return resultado
+
+    def _extrair_tabela_itens(self, contexto: ContextoExtracao, resultado: ResultadoExtracao) -> None:
+        tabela = montar_tabela_itens(contexto.paginas_palavras)
+        if not tabela.itens:
+            return
+
+        resultado.documento.itens = tabela.itens
+        resultado.confiancas["itens"] = "media"  # heuristica posicional
+
+        if tabela.cfop_predominante:
+            resultado.documento.campos_adicionais.append(
+                CampoAdicional(campo="CFOP", valor=tabela.cfop_predominante)
+            )
+            resultado.confiancas["CFOP"] = "media"
+
+        valor_total_produtos_bruto = comum.extrair_valor_rotulo(
+            contexto.texto, ROTULOS_VALOR_TOTAL_PRODUTOS
+        )
+        if valor_total_produtos_bruto is None or tabela.soma_valor_total is None:
+            return
+
+        valor_total_produtos = comum.para_numero(valor_total_produtos_bruto)
+        if not isinstance(valor_total_produtos, float):
+            return
+
+        if abs(valor_total_produtos - tabela.soma_valor_total) > _TOLERANCIA_SOMA:
+            resultado.avisos.append(
+                f"A soma dos itens (R$ {tabela.soma_valor_total:.2f}) nao bate com "
+                f"o Valor Total dos Produtos informado (R$ {valor_total_produtos:.2f}) "
+                "-- confira a tabela manualmente."
+            )

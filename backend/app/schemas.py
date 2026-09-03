@@ -4,7 +4,7 @@ DocumentoExtraido e o mesmo contrato de dados nos dois modos de extracao
 (regex/heuristica ou LLM) -- e isso que permite a tabela e a exportacao
 Excel funcionarem igual independente de como o documento foi processado.
 """
-from typing import List, Optional, Union
+from typing import Dict, List, Optional, Union
 
 from pydantic import BaseModel
 
@@ -40,5 +40,14 @@ class DocumentoExtraido(BaseModel):
 class ExtractionResult(BaseModel):
     modo_extracao: str  # "basico" ou "ia"
     origem_texto: str = "digital"  # "digital" (pdfplumber) ou "ocr" (Tesseract)
+    confiancas: Dict[str, str] = {}
+    """Confianca por campo, so preenchida no modo basico: "alta" (rotulo
+    explicito), "media" (heuristica posicional, ex: tabela por
+    coordenada), "baixa" (fallback sem rotulo). Chave e o nome do atributo
+    em DocumentoExtraido, ou, para itens de campos_adicionais, o texto
+    exato do campo. Fica fora de DocumentoExtraido de proposito: esse
+    schema tambem e o output_format do modo IA (Structured Outputs da
+    Anthropic), e a LLM nao tem uma nocao natural de confianca por
+    campo."""
     aviso: Optional[str] = None  # informativo, nao e erro (ex: PDF escaneado, fallback IA -> basico)
     documento: DocumentoExtraido

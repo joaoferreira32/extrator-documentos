@@ -31,15 +31,20 @@ backend/app/
     __init__.py         # registro dos extratores + selecionar_extrator()
     comum.py            # helpers compartilhados (regex CNPJ/CPF/valor/data, busca por rotulo)
     boleto.py            # BoletoExtractor
-    danfe.py              # DanfeExtractor (deteccao + chave de acesso; campos fiscais e
-                          #   tabela de itens ainda pendentes -- ver "Estado atual")
+    danfe.py              # DanfeExtractor (deteccao, chave de acesso, valor_total,
+                          #   delega tabela de itens pra danfe_tabela.py)
+    danfe_tabela.py        # reconstrucao da tabela de itens da DANFE por coordenadas
+                          #   x0/x1/top/bottom (nao regex sobre texto corrido)
     generico.py           # GenericExtractor (fallback: pedido_compra, relatorio, desconhecido)
   llm_extractor.py     # extração via Claude (modo "ia", opcional)
   excel_exporter.py    # ExtractionResult -> .xlsx
 backend/tests/
-  fixtures/boleto_real_anonimizado.txt  # texto bruto de boleto real (dados trocados)
+  fixtures/boleto_real_anonimizado.txt     # texto bruto de boleto real (dados trocados)
+  fixtures/danfe_real_anonimizado.txt      # texto bruto de DANFE real (destinatario ficticio)
+  fixtures/danfe_palavras_anonimizado.json # palavras posicionadas (x0/x1/top/bottom) da mesma DANFE
   test_basic_extractor.py               # compat da funcao publica extrair()
   test_extractors_boleto.py             # BoletoExtractor isolado, com a fixture real acima
+  test_extractors_danfe.py              # DanfeExtractor + montar_tabela_itens, fixtures reais acima
   test_detector.py                      # selecionar_extrator() roteia pro extrator certo
   test_chave_acesso.py                  # digito verificador da chave de acesso (algoritmo publico)
   test_pdf_extractor.py                 # orquestracao digital->OCR (mocks) + 1 teste OCR real (skip se indisponivel)
@@ -162,23 +167,91 @@ fixture real em `test_extractors_boleto.py`):
   remover "Fornecedor" do começo do nome de uma empresa só porque
   "Fornecedor" também é um rótulo válido de emissor.
 
-### DANFE (`danfe.py`) — estado parcial, ver "Estado atual"
+### DANFE (`danfe.py` + `danfe_tabela.py`)
 
-Só o que **não depende de suposição de layout** está implementado:
-detecção por marcador (`MARCADORES_DETECCAO`: `danfe`, `documento
-auxiliar da nota fiscal eletr[ônica]`, `chave de acesso`, `protocolo de
-autorização de uso`, mais `nf-e`/`cfop` que já existiam) e validação da
-chave de acesso (44 dígitos + dígito verificador módulo 11, pesos
-cíclicos 2–9 — algoritmo público da SEFAZ, `test_chave_acesso.py` tem
-vetores sintéticos calculados a mão). Campos fiscais específicos (série,
-natureza da operação, CFOP predominante, ICMS, frete) e a tabela de itens
-por coordenadas **ainda não foram implementados** — dependem de um dump
-real via `/debug/extract-words` pra não repetir o erro de supor layout
-sem material real (foi assim que o boleto quebrou repetidamente antes da
-fixture real). Enquanto isso, `DanfeExtractor` reusa `GenericExtractor`
-para os campos universais (emissor/destinatário/número/data/valor), então
-uma DANFE não regride em relação ao que já tinha antes desta refatoração
-— só ganha a chave de acesso validada por cima.
+Detecção por marcador (`MARCADORES_DETECCAO`: `danfe`, `documento auxiliar
+da nota fiscal eletr[ônica]`, `chave de acesso`, `protocolo de autorização
+de uso`, mais `nf-e`/`cfop` que já existiam). `DanfeExtractor` reusa
+`GenericExtractor` para os campos universais (emissor/destinatário/
+número/data), então uma DANFE não regride em relação ao que já tinha antes
+da refatoração Strategy. Por cima disso:
+
+- **Chave de acesso**: 44 dígitos + dígito verificador módulo 11, pesos
+  cíclicos 2–9 — algoritmo público e padronizado pela SEFAZ, não depende
+  de layout nenhum (`test_chave_acesso.py` tem vetores sintéticos
+  calculados a mão). Confiança `"alta"` quando o DV bate, `"baixa"`
+  quando acha 44 dígitos mas o DV não confere (não descarta, só avisa).
+- **`valor_total`**: sobrescrito via rótulo `"Valor Total da Nota"` (ou
+  variantes) com confiança `"alta"` — o fallback genérico
+  (`comum.valor_por_total_ou_ultimo`) exige um `"R$"` na frente do valor,
+  mas uma DANFE real imprime só o número, sem o símbolo, então o fallback
+  genérico deixava `valor_total` como `None`.
+- **Campos fiscais específicos** (série, natureza da operação, data de
+  saída, IE do emitente, ICMS/frete como campos de documento — não
+  agregados da tabela) **ainda não implementados** — dependem de
+  confirmar o rótulo exato num dump real antes de codar, pra não repetir
+  o erro de supor layout sem material.
+
+#### Tabela de itens por coordenadas (`danfe_tabela.py`)
+
+Usa `pagina.extract_words()` (x0/x1/top/bottom de cada palavra), não regex
+sobre texto corrido — texto corrido perde a estrutura de colunas.
+Estrutura confirmada com um dump real via `/debug/extract-words` de uma
+DANFE real (nota da Dell); fixtures em `tests/fixtures/danfe_*` (dados do
+destinatário são fictícios, dados do emitente/tabela são reais e
+públicos — CNPJ de empresa, não dado pessoal).
+
+- **Agrupamento de linha** (`_agrupar_linhas`): palavras cujo `top`
+  difere em até `TOLERANCIA_LINHA` (3pt) formam a mesma linha visual.
+- **Identificação de coluna pelo cabeçalho** (`_identificar_colunas`):
+  cada coluna tem uma palavra-chave curta (ex: `"calc"` pra
+  B.CALC.ICMS, `"i.p.i"` — com pontos — pra I.P.I., já que
+  `pdfplumber` só quebra em espaço em branco e alguns rótulos saem
+  colados sem espaço interno). A busca varre a linha de cabeçalho da
+  esquerda pra direita e **nunca volta pra trás** (índice mínimo avança a
+  cada rótulo casado) — evita que "ICMS" (que aparece dentro de
+  "B.CALC.ICMS", "VALOR ICMS" e "ICMS/IPI") case com a coluna errada.
+- **Fronteira de coluna** (`_limites_colunas`): ponto médio entre âncoras
+  consecutivas. A primeira coluna não tem limite inferior
+  (`float("-inf")`) e a última não tem limite superior (`float("inf")`)
+  — **bug real corrigido**: a primeira versão usava o x0 da própria
+  âncora do cabeçalho como limite inferior da primeira coluna, mas um
+  token de dado pode começar antes do rótulo do cabeçalho (ex: código de
+  produto "460-BCZS" em x0=85, rótulo "CÓDIGO" em x0=98.7) — sem o
+  `-inf`, esse token ficava sem coluna nenhuma, a linha do item real era
+  classificada como "fim de tabela" e a tabela inteira saía vazia.
+- **Classificação de linha** (`_tipo_linha`): `"item"` exige conteúdo na
+  coluna CÓDIGO (todo item de verdade tem código de produto — sinal mais
+  confiável do que "tem algum número em alguma coluna", que rodapé/seção
+  seguinte também podem ter por coincidência de posição de x).
+  `"continuação"` é conteúdo só em DESCRIÇÃO (quebra de linha dentro da
+  célula). Qualquer outra coisa é `"fim"` e encerra a tabela. **Bug real
+  corrigido**: a versão anterior só checava "a linha tem algum valor em
+  ncm/cfop/quantidade/valor_unitario/valor_total" pra decidir se
+  continuava — texto de rodapé como "Valor Total dos Produtos 215,03"
+  caía por coincidência de x dentro da faixa da coluna NCM e virava um
+  item fantasma vazio.
+- **Valores colados** (`_separar_valores_colados`): uma coluna estreita
+  pode fazer o pdfplumber juntar dois valores monetários num só token sem
+  espaço (ex: `"13,9718,00"` = VALOR I.P.I. `13,97` + ALÍQUOTA ICMS
+  `18,00`, confirmado no dump real). Separado por **padrão** de valor
+  monetário (regex), não por posição de pixel — mais robusto do que
+  adivinhar uma fronteira de sub-coluna que o cabeçalho nem rotula.
+- **Texto vertical descartado** (`_eh_texto_vertical`): rótulos de seção
+  impressos girados (ex: "SOTUDORP" = "PRODUTOS" ao contrário) ficam numa
+  faixa estreita de x0 na margem esquerda (15–85) e têm caixa
+  delimitadora alta e estreita (altura > 2× largura) — o oposto de uma
+  palavra horizontal normal. Descartados antes de agrupar linhas.
+- **Validação cruzada**: soma dos `valor_total` de todos os itens
+  comparada com o rótulo nacional `"Valor Total dos Produtos"`
+  (tolerância de 0.02 pra arredondamento). Se não bater, vira aviso em
+  `resultado.avisos` em vez de devolver a tabela calada.
+- Confiança `"media"` (heurística posicional) pra `itens` e pra `CFOP`
+  (moda dos CFOPs das linhas da tabela, exposto em `campos_adicionais`).
+- Só roda quando `contexto.paginas_palavras` existe — `None` quando a
+  origem do texto é OCR (sem posição confiável de palavra); tabela de
+  itens via OCR fica fora de escopo, documentado como limitação
+  conhecida.
 
 ## OCR (fallback digital -> imagem)
 
@@ -276,6 +349,13 @@ a camada fina de compatibilidade (`extrair()`/`extrair_com_metadados()`);
 testa o dígito verificador com vetores sintéticos (sem depender de DANFE
 real nenhuma).
 
+`tests/test_extractors_danfe.py` testa `DanfeExtractor` e
+`danfe_tabela.montar_tabela_itens` contra as fixtures reais em
+`tests/fixtures/danfe_*` (texto bruto + palavras posicionadas de uma DANFE
+real, destinatário fictício) — inclui os dois bugs reais documentados
+acima (descarte de texto vertical, separação de valores colados) e a
+validação de soma com aviso.
+
 `tests/test_pdf_extractor.py` testa a orquestração digital->OCR com
 mocks (`monkeypatch` em `_tentar_ocr`/`_OCR_IMPORTADO`), então passa
 independente de o Tesseract estar instalado na máquina que roda os
@@ -309,29 +389,34 @@ itens da DANFE) antes de escrever a lógica de reconstrução por
 coordenadas. Só funciona com texto digital (`paginas_palavras` é `None`
 quando a origem é OCR — retorna 400 nesse caso).
 
-**Refatoração por padrão Strategy em andamento** (ver "Arquitetura de
-extratores" acima) — etapas 1 e 2 do plano concluídas: extratores
-separados por tipo com boleto migrado sem regressão (mesma fixture real,
-mesmos resultados), captura de palavras posicionadas, e os dois endpoints
-de debug. **Bloqueado na etapa 3** (campos fiscais da DANFE + tabela de
-itens por coordenadas) esperando um dump anonimizado real via
-`/debug/extract-words` — não implementar isso por suposição foi decisão
-explícita, dado o histórico de bugs reais de layout neste projeto.
+**Refatoração por padrão Strategy** (ver "Arquitetura de extratores"
+acima) — etapas 1, 2 e 3 do plano concluídas: extratores separados por
+tipo com boleto migrado sem regressão (mesma fixture real, mesmos
+resultados), captura de palavras posicionadas, os dois endpoints de
+debug, e a DANFE completa (chave de acesso, valor_total por rótulo, tabela
+de itens por coordenadas com CFOP predominante e validação de soma) — tudo
+construído a partir de um dump real via `/debug/extract-words` (nota da
+Dell), não por suposição. `confiancas` (`ResultadoExtracao`/
+`ExtractionResult`) já é calculada em cada extrator e exposta na API —
+etapa 4 concluída.
 
 Não implementado ainda / possíveis próximos passos:
 
-- DANFE: campos fiscais específicos (série, natureza da operação, CFOP
-  predominante, ICMS, frete) e tabela de itens por coordenadas — aguardando
-  dump real (ver acima).
-- Confiança por campo (`ResultadoExtracao.confiancas`) já é calculada em
-  cada extrator mas ainda não está exposta em `ExtractionResult`/API nem
-  na interface — etapas 4 e 5 do plano.
+- DANFE: campos fiscais adicionais que ainda dependem de confirmar o
+  rótulo exato num dump real (série, natureza da operação, data de saída,
+  IE do emitente, ICMS/frete como campos de documento — não agregados da
+  tabela).
+- Indicador de confiança na interface (marcador discreto pra campos
+  `"media"`/`"baixa"` em `resultado.confiancas`) — etapa 5 do plano, ainda
+  não iniciada.
 - Excel: as duas abas (Resumo/Itens) já existem, falta só formatação
-  (cabeçalho em negrito, largura de coluna) — etapa 6 do plano.
+  (cabeçalho em negrito, largura de coluna) — etapa 6 do plano, ainda não
+  iniciada.
 - Correção de confusão de OCR cobre só CNPJ/CPF/valores — não
   numero_documento/Nosso Número nem texto livre (emissor/destinatario).
-- Só há um fixture de teste automatizado com texto real (um boleto
-  anonimizado). Uma fixture real de DANFE está a caminho (ver acima).
+- Tabela de itens da DANFE não funciona com texto de origem OCR (só
+  digital, que tem posição confiável de palavra) — limitação conhecida,
+  não um bug.
 
 Plano original com todas as etapas em
 `C:\Users\User\.claude\plans\jazzy-foraging-harbor.md`.

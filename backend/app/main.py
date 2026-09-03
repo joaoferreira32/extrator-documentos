@@ -15,6 +15,23 @@ TAMANHO_MAXIMO_BYTES = 20 * 1024 * 1024  # 20 MB
 app = FastAPI(title="Extrator Inteligente de Documentos")
 
 
+def _resultado_basico(resultado_texto, resultado_extracao, aviso_extra: str | None = None) -> ExtractionResult:
+    """Monta a resposta do modo basico a partir de um ResultadoExtracao,
+    juntando os avisos especificos do extrator (ex: soma da tabela nao
+    bate) com um aviso extra do proprio main.py (ex: fallback de IA), se
+    houver."""
+    avisos = list(resultado_extracao.avisos)
+    if aviso_extra:
+        avisos.insert(0, aviso_extra)
+    return ExtractionResult(
+        modo_extracao="basico",
+        origem_texto=resultado_texto.origem,
+        confiancas=resultado_extracao.confiancas,
+        aviso=" ".join(avisos) if avisos else None,
+        documento=resultado_extracao.documento,
+    )
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
@@ -68,25 +85,22 @@ async def extract_document(file: UploadFile):
             # Captura ampla e intencional: qualquer falha da IA (rede, auth,
             # rate limit, resposta fora do schema) deve cair para o modo
             # basico em vez de virar erro para quem esta usando o sistema.
-            documento = basic_extractor.extrair_com_metadados(
+            resultado_extracao = basic_extractor.extrair_com_metadados(
                 resultado_texto.texto, resultado_texto.paginas_palavras
-            ).documento
-            return ExtractionResult(
-                modo_extracao="basico",
-                origem_texto=resultado_texto.origem,
-                aviso=(
+            )
+            return _resultado_basico(
+                resultado_texto,
+                resultado_extracao,
+                aviso_extra=(
                     f"Extracao por IA indisponivel no momento "
                     f"({type(exc).__name__}), usando modo basico."
                 ),
-                documento=documento,
             )
 
-    documento = basic_extractor.extrair_com_metadados(
+    resultado_extracao = basic_extractor.extrair_com_metadados(
         resultado_texto.texto, resultado_texto.paginas_palavras
-    ).documento
-    return ExtractionResult(
-        modo_extracao="basico", origem_texto=resultado_texto.origem, documento=documento
     )
+    return _resultado_basico(resultado_texto, resultado_extracao)
 
 
 @app.post("/debug/extract-text")

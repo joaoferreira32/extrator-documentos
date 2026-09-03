@@ -24,17 +24,23 @@ exibe numa tabela e permite baixar o resultado em Excel.
 A IA é um **upgrade opcional**, não um requisito para o sistema funcionar:
 
 - **Modo básico** (padrão, sem nenhuma configuração): `pdfplumber` extrai o
-  texto do PDF e `basic_extractor.py` captura os campos por **rótulo**
-  conhecido (`Beneficiário:`, `Sacado:`, `Cedente:`, `Nosso Número:`,
-  `Vencimento:`, etc.) em vez de regex solto pelo texto inteiro — isso é o
-  que evita pegar pedaços soltos de outros números. Reconhece boleto
-  bancário, nota fiscal (`DANFE`/`NF-e`/`CFOP`) e pedido de compra por
+  texto (e, quando digital, a posição x/y de cada palavra) do PDF, e um
+  extrator dedicado por tipo de documento (padrão Strategy, em
+  `app/extractors/`) captura os campos por **rótulo** conhecido
+  (`Beneficiário:`, `Sacado:`, `Cedente:`, `Nosso Número:`, `Vencimento:`,
+  etc.) em vez de regex solto pelo texto inteiro — isso é o que evita
+  pegar pedaços soltos de outros números. Reconhece boleto bancário, DANFE
+  (`DANFE`/`NF-e`/`CFOP`/chave de acesso) e pedido de compra por
   palavra-chave, identifica CNPJ/CPF por formato e associa ao
   emissor/destinatário quando aparecem perto do nome, e para boletos
-  também captura linha digitável e vencimento. Reconstruir a tabela de
-  itens de forma confiável por regex não é viável a partir de texto de PDF
-  sem estrutura, então nesse modo `itens` normalmente fica vazio. É uma
-  limitação conhecida, não um bug.
+  também captura linha digitável e vencimento. Pra DANFE, `itens` é
+  reconstruído por **posição** (x0/x1/top/bottom de cada palavra, não
+  regex sobre texto corrido) — a única forma confiável de recuperar uma
+  tabela a partir de PDF sem estrutura de tabela nativa; boleto e
+  documentos genéricos deixam `itens` vazio, já que não têm uma tabela de
+  itens no mesmo sentido. Cada campo carrega uma confiança
+  (`"alta"`/`"media"`/`"baixa"`) exposta no campo `confiancas` da
+  resposta da API.
 - **Modo IA** (com `ANTHROPIC_API_KEY` configurada): usa a API da Anthropic
   (Claude) via [Structured Outputs](https://docs.claude.com/) para extrair
   os mesmos campos com muito mais precisão, incluindo a lista de itens. Se a
@@ -192,8 +198,16 @@ estão disponíveis, e é pulado (não falha) quando não estão.
 
 ## Limitações conhecidas / próximos passos
 
-- Modo básico não extrai itens de tabela (linhas de nota fiscal/pedido) —
-  apenas metadados de topo. O modo IA cobre esse caso.
+- Modo básico extrai itens de tabela só pra DANFE (por posição x/y das
+  palavras) — boleto e documentos genéricos ficam com `itens` vazio. O
+  modo IA cobre também esses casos.
+- A tabela de itens da DANFE exige texto de origem digital (posição
+  confiável de palavra); em PDF escaneado (origem OCR) `itens` fica
+  vazio nesse modo.
+- DANFE: campos fiscais adicionais (série, natureza da operação, data de
+  saída, IE do emitente, ICMS/frete como campos de documento) ainda não
+  implementados — dependem de confirmar o rótulo exato num dump real
+  antes de codar.
 - OCR precisa do Tesseract instalado separadamente no sistema (ver
   "Instalando o Tesseract" acima) — sem ele, PDFs escaneados continuam
   retornando só o aviso, sem texto.
