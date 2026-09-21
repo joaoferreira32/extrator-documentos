@@ -15,7 +15,7 @@ exibe numa tabela e permite baixar o resultado em Excel.
 - **OCR (opcional):** [Tesseract](https://github.com/tesseract-ocr/tesseract)
   via `pytesseract`, pacote de idioma português — ver "Instalando o
   Tesseract" abaixo
-- **Exportação para Excel:** pandas + openpyxl
+- **Exportação para Excel:** openpyxl (4 abas formatadas; ver CLAUDE.md, "Excel")
 - **Estruturação dos dados:** ver "Modo básico vs modo IA" abaixo
 - **Frontend:** HTML/CSS/JS puro, sem framework, servido pelo próprio FastAPI
 
@@ -62,6 +62,16 @@ pode ser corrigido antes de exportar** — campos de confiança baixa ou
 obrigatórios vazios já vêm abertos para edição — e a correção sai no Excel.
 Detalhes (campos obrigatórios por tipo de documento, regras do resumo, o que é
 só exibição) em `CLAUDE.md`, seção "Interface: confiança e edição".
+
+### Excel
+
+O botão **Baixar Excel** gera um `.xlsx` com 4 abas — **Resumo** (uma linha por
+documento), **Itens**, **Campos adicionais** e **Avisos** —, todas com cabeçalho
+congelado, filtro, largura ajustada e uma coluna `ID` que liga as abas. Valores
+monetários saem como número (`R$ 1.234,56`), datas como data de verdade, e
+campos de confiança média/baixa ou corrigidos por você ficam destacados (com
+comentário). A estrutura já comporta vários documentos num arquivo só. Detalhes
+em `CLAUDE.md`, seção "Excel".
 
 ## Origem do texto: digital vs OCR
 
@@ -166,7 +176,7 @@ digital→OCR sem depender do Tesseract estar instalado; há um teste "de
 verdade" com OCR real que roda quando o Tesseract e o idioma português
 estão disponíveis, e é pulado (não falha) quando não estão.
 
-Os testes de interface (Chromium real via Playwright, 19 testes, com PDFs
+Os testes de interface (Chromium real via Playwright, 25 testes, com PDFs
 fictícios gerados na hora) são opt-in e usam dependências separadas:
 
 ```bash

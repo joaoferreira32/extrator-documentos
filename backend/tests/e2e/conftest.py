@@ -42,6 +42,42 @@ def navegador():
     playwright.stop()
 
 
+class Planilha:
+    """O .xlsx baixado, lido de volta: cada aba como lista de {cabecalho: valor}."""
+
+    def __init__(self, caminho):
+        import openpyxl
+
+        self.wb = openpyxl.load_workbook(caminho)
+
+    def linhas(self, aba):
+        ws = self.wb[aba]
+        cabecalho = [c.value for c in ws[1]]
+        return [dict(zip(cabecalho, linha)) for linha in ws.iter_rows(min_row=2, values_only=True)]
+
+    def celula(self, aba, coluna, linha=2):
+        ws = self.wb[aba]
+        cabecalho = [c.value for c in ws[1]]
+        return ws.cell(row=linha, column=cabecalho.index(coluna) + 1)
+
+    @property
+    def resumo(self):
+        """A 1a (e, hoje, unica) linha do Resumo."""
+        return self.linhas("Resumo")[0]
+
+    @property
+    def itens(self):
+        return self.linhas("Itens")
+
+    @property
+    def campos(self):
+        return {linha["Campo"]: linha for linha in self.linhas("Campos adicionais")}
+
+    @property
+    def avisos(self):
+        return self.linhas("Avisos")
+
+
 class Tela:
     """Atalhos sobre a pagina: extrair um PDF, ler o resumo, baixar o Excel."""
 
@@ -68,15 +104,12 @@ class Tela:
         return json.loads(self.page.locator("#json-bruto").text_content())
 
     def baixar_excel(self):
-        """Clica em Baixar Excel e devolve {campo: valor} da aba Resumo."""
-        import openpyxl
-
+        """Clica em Baixar Excel e devolve a Planilha (abas lidas com openpyxl)."""
         with self.page.expect_download() as download:
             self.page.click("#btn-excel")
         destino = self.tmp_path / "exportado.xlsx"
         download.value.save_as(destino)
-        planilha = openpyxl.load_workbook(destino)
-        return {linha[0]: linha[1] for linha in planilha["Resumo"].iter_rows(min_row=2, values_only=True)}
+        return Planilha(destino)
 
     def campo(self, id_campo):
         return self.page.locator(f'[data-campo="{id_campo}"]')

@@ -11,7 +11,7 @@ de Engenharia da Computação).
 - Extração de PDF: pdfplumber (texto digital) + PyMuPDF (rasterizar página
   para imagem) + Tesseract via `pytesseract` (OCR, dependência de sistema
   externa e opcional)
-- Excel: pandas + openpyxl
+- Excel: openpyxl (escrita direta, sem pandas)
 - LLM (opcional): Anthropic Claude (`anthropic` SDK), modelo `claude-sonnet-5`,
   via `client.messages.parse(output_format=...)` (Structured Outputs)
 - Frontend: HTML/CSS/JS puro, sem framework, servido como estático pelo FastAPI
@@ -37,7 +37,8 @@ backend/app/
                           #   x0/x1/top/bottom (nao regex sobre texto corrido)
     generico.py           # GenericExtractor (fallback: pedido_compra, relatorio, desconhecido)
   llm_extractor.py     # extração via Claude (modo "ia", opcional)
-  excel_exporter.py    # ExtractionResult -> .xlsx
+  excel_exporter.py    # lista de documentos -> .xlsx com 4 abas formatadas (openpyxl)
+  confianca.py         # confianca geral ("X de Y alta"): a mesma regra da tela, em Python
 backend/tests/
   fixtures/boleto_real_anonimizado.txt     # texto bruto de boleto real (dados trocados)
   fixtures/danfe_real_anonimizado.txt      # COMPOSTO de trechos reais (nao as 84 linhas) -- ver docstring do teste
@@ -51,6 +52,8 @@ backend/tests/
   test_chave_acesso.py                  # digito verificador da chave de acesso (algoritmo publico)
   test_pdf_extractor.py                 # orquestracao digital->OCR (mocks) + 1 teste OCR real (skip se indisponivel)
   test_avisos.py                        # avisos (lista) x aviso (string juntada)
+  test_excel_exporter.py                # Excel multi-aba lido de volta com openpyxl (ver "Excel")
+  test_confianca.py                     # regra da confianca geral em Python (a mesma da tela)
   e2e/                                  # testes de interface no navegador (Playwright) -- opt-in, ver "Testes"
     helpers.py                          #   servidor uvicorn temporario + PDFs FICTICIOS gerados por PyMuPDF
     conftest.py, test_interface_confianca.py
@@ -596,7 +599,7 @@ meio de um handler pode deixar a tela "quase certa"; a validação captura
 `pageerror`.
 
 **Como é validado:** testes e2e versionados em `backend/tests/e2e/`
-(Playwright num Chromium real, 19 testes). PDFs **fictícios** gerados por
+(Playwright num Chromium real, 25 testes). PDFs **fictícios** gerados por
 PyMuPDF (`helpers.gerar_pdfs`) — nunca documento real. Cobrem: chips e contagem
 do resumo conferidos contra o JSON da resposta por uma conta independente em
 Python, banner com 2 avisos, campos abertos/fechados por estado, clique e teclado
@@ -613,6 +616,99 @@ trava de reentrância faz o teste correspondente falhar).
 `docs/screenshot.png` (README) é gerado por `tests/e2e/gerar_screenshot.py` a
 partir dos mesmos PDFs sintéticos — nunca de um documento real (uma captura de
 tela com dado real já foi um vetor de vazamento neste projeto).
+
+## Excel (etapa 6)
+
+`POST /export-excel` recebe uma **lista** de documentos (a tela envia 1; a
+estrutura já comporta lote) e devolve um `.xlsx` com **4 abas, sempre
+presentes** (estrutura estável pra Power Query/fórmulas; só cabeçalho quando
+não há dados):
+
+```
+{ "documentos": [ { "arquivo": "x.pdf", "resultado": <ExtractionResult>,
+                    "corrigidos": { "<chave>": <valor ORIGINAL extraído> } } ] }
+```
+
+| Aba | Colunas | Linhas |
+|---|---|---|
+| **Resumo** | ID, Arquivo, Documento, Tipo, Número, Data de emissão, Data de vencimento, Emissor, Emissor CNPJ/CPF, Destinatário, Destinatário CNPJ/CPF, Valor total, Confiança geral | 1 por documento |
+| **Itens** | ID, Documento, Descrição, Quantidade, Valor unitário, Valor total | todos os itens |
+| **Campos adicionais** | ID, Documento, Campo, Valor, Confiança | 1 por campo adicional |
+| **Avisos** | ID, Documento, Aviso | 1 por aviso |
+
+- **`ID`** (1, 2, 3… pela ordem do lote) está em todas as abas como **chave de
+  ligação** — tipo + número pode colidir entre emissores diferentes.
+  **`Documento`** é a descrição legível (`"Nota fiscal 000012345"`; sem número:
+  `"Nota fiscal — arquivo.pdf"`), só pra leitura humana. **`Arquivo`** (só no
+  Resumo) é o PDF de origem. A coluna `Tipo` do Resumo mantém o valor
+  **interno** (`nota_fiscal`, bom pra filtrar), diferente do rótulo amigável
+  da tela.
+- **Emissor/Destinatário separados do documento fiscal:** `"NOME (CNPJ x)"`
+  vira `Emissor = NOME` e `Emissor CNPJ/CPF = x` (idem destinatário), pra
+  filtrar e cruzar. Pega o **último** parêntese, então nomes com parênteses
+  próprios funcionam.
+- **`corrigidos`** existe porque o backend só recebe o valor *atual*: a tela
+  manda quais campos o usuário mudou e o valor original. A chave é o mesmo
+  espaço de nomes de `confiancas` (`emissor`, `"Chave de Acesso"`...). A tela
+  guarda `original` e `atual` por campo, então o custo é pequeno
+  (`coletarCorrigidos` em `script.js`).
+
+**Formatação (todas as abas):** cabeçalho em negrito, congelado (`A2`), filtro
+automático cobrindo a tabela, largura ajustada ao conteúdo (mín. 8, teto 60,
+com quebra de linha nos textos).
+
+**Regras que evitam bugs reais de planilha** (docstring de `excel_exporter.py`):
+- **Formato monetário:** o código guardado no arquivo é `"R$" #,##0.00`
+  (notação en-US); o Excel/LibreOffice **localizam na exibição** (pt-BR mostra
+  `R$ 1.234,56`). Escrever `#.##0,00` literalmente quebraria o formato. Valor
+  unitário usa `"R$" #,##0.00##` (preço pode ter até 4 casas).
+- **Só valor monetário vira número:** `valor_total` e os valores dos itens
+  (quando já são `float`) e 3 campos adicionais fixos (`CAMPOS_MONETARIOS`:
+  Valor do Documento, Desconto, Valor a Pagar). **Todo o resto é texto** — a
+  chave de acesso (44 dígitos; o Excel só guarda 15 de precisão), Nosso
+  Número, CFOP, linha digitável, número do documento (zeros à esquerda).
+  Nunca "parece número → converte". String em campo numérico (a conversão já
+  tinha falhado) fica texto.
+- **Datas** viram data de verdade (`dd/mm/aaaa`), convertidas de `15/04/2026`
+  e de ISO (o modo IA pode devolver); dia inexistente ou texto livre fica
+  texto, sem quebrar.
+- **Texto é sempre texto — injeção de fórmula.** O `openpyxl` trata string
+  que começa com `=` como **fórmula**, e o texto vem de PDF (não confiável):
+  um emissor `=HYPERLINK(...)` viraria fórmula executável na máquina de quem
+  abre. Forçamos `data_type = "s"` (o teste verifica que não existe nenhum
+  `<f>` no XML e que, sem isso, o teste falha). Caracteres de controle (que o
+  `openpyxl` rejeita) são removidos; texto acima de 32.767 caracteres é
+  truncado.
+
+**Destaques (mesmos tons da tela):** confiança **média** = fundo amarelo claro
+(`FDF3E0`), **baixa** = vermelho claro (`FBECEB`), **corrigido pelo usuário** =
+verde-petróleo claro (`E7F0EF`) + itálico. Cada célula destacada leva um
+**comentário** com o texto (não depende só de cor): "Confiança média/baixa…" ou
+"Corrigido pelo usuário. Valor extraído: X" (também quando o usuário
+**esvaziou** o campo). Em Campos adicionais a coluna `Confiança` traz
+Alta/Média/Baixa/Corrigido em texto. Tabela de itens com confiança média/baixa
+pinta as linhas, com um comentário só (na 1ª linha de cada documento).
+
+**Confiança geral** (`"6 de 7 alta"`, coluna do Resumo) usa a mesma regra da
+tela — `app/confianca.py` (Y = campos com valor e confiança, sem o tipo;
+corrigidos e vazios ficam fora; sem `confiancas` no modo IA → `"—"`). A regra
+existe em **JS** (tela) e em **Python** (Excel); um teste e2e compara os dois
+números (`test_excel_*`), então não divergem sem falhar.
+
+**Lote:** a estrutura já é de lote (lista, `ID`, linhas por documento; testes
+com 2 e 4 documentos). Falta a **interface** de lote (várias PDFs de uma vez,
+estado de edição por documento, fila/progresso, erro por arquivo); a extração
+continua por arquivo (o lote seriam N chamadas a `/extract-document`).
+
+**Como é validado:** `tests/test_excel_exporter.py` (lê o `.xlsx` de volta com
+`openpyxl`: abas, negrito/congelado/filtro, formatos, datas, texto vs número,
+fórmula, fundos e comentários, lote, endpoint), `tests/test_confianca.py` e os
+`test_excel_*` do e2e (Excel comparado com a tela). Conferido por mutação
+(deixar o `openpyxl` inferir fórmula, formato monetário "brasileiro" literal,
+chave de acesso como número, a tela não enviar `corrigidos`, Python contando
+corrigido como "alta"). **Não foi renderizado no Excel/LibreOffice** (não
+disponível no ambiente de desenvolvimento): a conferência visual é manual.
+`pandas` deixou de ser dependência (só o exportador o usava).
 
 ## Convenções
 
@@ -690,7 +786,7 @@ direto com um `UploadFile` montado na mão, porque `httpx` (TestClient) não
 está nas dependências.
 
 **Testes e2e (interface, opt-in).** `tests/e2e/` roda a interface num Chromium
-real e **não** entra no `pytest tests` normal (que pula os 19 e2e sem subir
+real e **não** entra no `pytest tests` normal (que pula os 25 e2e sem subir
 servidor nem navegador, e não exige Playwright). Dependências separadas:
 
 ```bash
@@ -786,9 +882,9 @@ Não implementado ainda / possíveis próximos passos:
   "Interface: confiança e edição"; falta só a validação manual do usuário no
   navegador. A anotação de que `itens` da DANFE deve ser `"alta"` quando a
   soma fecha também já está implementada, ver "Tabela de itens".)
-- Excel: as duas abas (Resumo/Itens) já existem, falta só formatação
-  (cabeçalho em negrito, largura de coluna) — etapa 6 do plano, ainda não
-  iniciada.
+- Excel (etapa 6) **implementado** — ver "Excel".
+- Interface de **lote** (várias PDFs de uma vez): o backend/Excel já comporta;
+  falta a tela (estado por documento, fila/progresso, erro por arquivo).
 - Correção de confusão de OCR cobre só CNPJ/CPF/valores — não
   numero_documento/Nosso Número nem texto livre (emissor/destinatario).
 - Tabela de itens da DANFE não funciona com texto de origem OCR (só

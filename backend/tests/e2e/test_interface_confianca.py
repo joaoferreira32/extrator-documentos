@@ -7,6 +7,9 @@ Rode com: `pytest tests/e2e --e2e -v` (ver requirements-dev.txt).
 Cada teste abre uma pagina nova e falha se houver erro de console/JS (fixture
 `tela`): um erro no meio de um handler ja deixou a tela "quase certa".
 """
+import re
+from datetime import date
+
 import pytest
 
 pytest.importorskip("playwright.sync_api", reason="instale requirements-dev.txt")
@@ -149,7 +152,7 @@ def test_editar_por_clique_enter_atualiza_resumo_json_e_excel(tela):
     assert tela.json_bruto()["documento"]["emissor"] == "EMISSOR CORRIGIDO LTDA"
     # bug real ja visto: foco tem que voltar ao botao depois do Enter
     assert tela.campo("emissor").locator(".valor-btn").evaluate("e => document.activeElement === e")
-    assert tela.baixar_excel()["Emissor"] == "EMISSOR CORRIGIDO LTDA"
+    assert tela.baixar_excel().resumo["Emissor"] == "EMISSOR CORRIGIDO LTDA"
 
 
 def test_escape_descarta_a_edicao(tela):
@@ -189,7 +192,7 @@ def test_valor_total_em_formato_br_vira_numero_no_json_e_no_excel(tela):
 
     valor = tela.json_bruto()["documento"]["valor_total"]
     assert valor == 1500.5 and isinstance(valor, float)
-    assert tela.baixar_excel()["Valor total"] == 1500.5  # numero de verdade no Excel
+    assert tela.baixar_excel().resumo["Valor total"] == 1500.5  # numero de verdade no Excel
     assert tela.campo("valor_total").locator(".valor-texto").inner_text() == "1.500,50"
 
     tela.page.click('[data-campo="valor_total"] .valor-btn')  # nao parseavel: fica texto
@@ -217,25 +220,21 @@ def test_mudar_o_tipo_muda_os_campos_obrigatorios(tela):
 
 
 def test_itens_em_pt_br_e_valores_numericos_intactos_no_json_e_no_excel(tela):
-    import openpyxl
-
     tela.extrair("danfe_ok")
     celulas = tela.page.locator("#tabela-itens tbody tr:first-child td").all_inner_texts()
     assert celulas == ["Mochila", "1", "215,03", "215,03"]  # nunca "215.03"
 
     item = tela.json_bruto()["documento"]["itens"][0]
     assert item["valor_total"] == 215.03 and item["valor_unitario"] == 215.03  # numeros no JSON
-    tela.baixar_excel()
-    itens = openpyxl.load_workbook(tela.tmp_path / "exportado.xlsx")["Itens"]
-    linha = [c.value for c in next(itens.iter_rows(min_row=2))]
-    assert linha[3] == 215.03  # numero somavel no Excel, nao texto formatado
+    linha = tela.baixar_excel().itens[0]
+    assert linha["Valor total"] == 215.03 and linha["Valor unitário"] == 215.03  # numero somavel, nao texto formatado
 
 
 def test_tipo_com_rotulo_amigavel_e_valor_interno_no_json_e_no_excel(tela):
     tela.extrair("danfe_ok")
     assert tela.campo("tipo_documento").locator(".valor-texto").inner_text() == "Nota fiscal"
     assert tela.json_bruto()["documento"]["tipo_documento"] == "nota_fiscal"
-    assert tela.baixar_excel()["Tipo de documento"] == "nota_fiscal"
+    assert tela.baixar_excel().resumo["Tipo"] == "nota_fiscal"
 
     tela.page.click('[data-campo="tipo_documento"] .valor-btn')
     opcoes = tela.page.locator('[data-campo="tipo_documento"] option')
@@ -247,7 +246,7 @@ def test_tipo_com_rotulo_amigavel_e_valor_interno_no_json_e_no_excel(tela):
     tela.page.select_option('[data-campo="tipo_documento"] select', "pedido_compra")
     assert tela.campo("tipo_documento").locator(".valor-texto").inner_text() == "Pedido de compra"
     assert tela.json_bruto()["documento"]["tipo_documento"] == "pedido_compra"
-    assert tela.baixar_excel()["Tipo de documento"] == "pedido_compra"
+    assert tela.baixar_excel().resumo["Tipo"] == "pedido_compra"
 
 
 def test_boleto_mostra_tipo_amigavel(tela):
@@ -260,7 +259,7 @@ def test_chave_de_acesso_em_blocos_de_4_com_valor_intacto(tela):
     chave = tela.campo("extra-0")
     assert chave.locator(".valor-texto").inner_text() == helpers.CHAVE  # 11 blocos de 4
     assert tela.json_bruto()["documento"]["campos_adicionais"][0]["valor"] == helpers.CHAVE_SEM_ESPACOS
-    assert tela.baixar_excel()["Chave de Acesso"] == helpers.CHAVE_SEM_ESPACOS
+    assert tela.baixar_excel().campos["Chave de Acesso"]["Valor"] == helpers.CHAVE_SEM_ESPACOS
 
     # abrir e confirmar sem mudar NAO e correcao (os espacos sao so exibicao)
     tela.page.click('[data-campo="extra-0"] .valor-btn')
@@ -362,3 +361,109 @@ def test_celular_sem_rolagem_horizontal(tela):
         assert pagina.evaluate("document.documentElement.scrollWidth") <= 390
     finally:
         contexto.close()
+
+
+# ---------- Excel: o que a planilha mostra tem que bater com a tela ----------
+
+
+def _x_de_y_da_tela(tela):
+    m = re.search(r"(\d+) de (\d+) campos com alta", tela.resumo())
+    return int(m.group(1)), int(m.group(2))
+
+
+def _x_de_y_do_excel(planilha):
+    m = re.match(r"(\d+) de (\d+) alta$", planilha.resumo["Confiança geral"])
+    return int(m.group(1)), int(m.group(2))
+
+
+def _fundo(celula):
+    return celula.fill.fgColor.rgb[-6:] if celula.fill.fill_type == "solid" else None
+
+
+def test_excel_da_danfe_reflete_a_tela_e_tem_as_4_abas(tela):
+    tela.extrair("danfe_ok")
+    x_y = _x_de_y_da_tela(tela)
+    planilha = tela.baixar_excel()
+
+    assert planilha.wb.sheetnames == ["Resumo", "Itens", "Campos adicionais", "Avisos"]
+    r = planilha.resumo
+    assert (r["ID"], r["Arquivo"], r["Documento"], r["Tipo"], r["Número"]) == (
+        1, "danfe_ok.pdf", "Nota fiscal 000012345", "nota_fiscal", "000012345",
+    )
+    assert r["Emissor"] == "DELL COMPUTADORES DO BRASIL LTDA" and r["Emissor CNPJ/CPF"] == "72.381.189/0010-01"
+    assert r["Destinatário"] == "FULANO DE TAL SILVA" and r["Destinatário CNPJ/CPF"] == "000.000.000-00"
+    assert r["Data de emissão"].date() == date(2026, 4, 15) and r["Valor total"] == 229.0
+    assert planilha.celula("Resumo", "Data de emissão").number_format == "dd/mm/yyyy"
+    assert planilha.celula("Resumo", "Valor total").number_format == '"R$" #,##0.00'
+    assert _x_de_y_do_excel(planilha) == x_y, "Excel e tela devem contar igual (JS x Python)"
+
+    assert [(i["ID"], i["Documento"], i["Descrição"]) for i in planilha.itens] == [(1, "Nota fiscal 000012345", "Mochila")]
+    assert planilha.campos["Chave de Acesso"]["Confiança"] == "Alta"
+    assert planilha.campos["Chave de Acesso"]["Valor"] == helpers.CHAVE_SEM_ESPACOS  # 44 digitos, texto inteiro
+    assert planilha.campos["CFOP"]["Confiança"] == "Média"
+    assert planilha.avisos == []  # a aba existe, so com o cabecalho
+
+
+def test_excel_do_boleto_reflete_a_tela(tela):
+    tela.extrair("boleto")
+    x_y = _x_de_y_da_tela(tela)
+    planilha = tela.baixar_excel()
+
+    r = planilha.resumo
+    assert (r["Documento"], r["Tipo"]) == ("Boleto 1234567890", "boleto")
+    assert r["Data de vencimento"].date() == date(2026, 9, 8) and r["Valor total"] == 900.0
+    assert r["Destinatário"] == "Maria Silva Santos" and r["Destinatário CNPJ/CPF"] == "111.222.333-44"
+    assert _x_de_y_do_excel(planilha) == x_y == (13, 13)
+    assert len(planilha.campos) == 7
+    assert planilha.campos["Valor do Documento"]["Valor"] == 1000.0  # numero, nao "1.000,00"
+    assert planilha.campos["Nosso Número"]["Valor"] == "10200000001-9"  # codigo continua texto
+
+
+def test_excel_da_danfe_com_problemas_tem_avisos_e_destaques(tela):
+    resposta = tela.extrair("danfe_problemas")
+    x_y = _x_de_y_da_tela(tela)
+    planilha = tela.baixar_excel()
+
+    assert [a["Aviso"] for a in planilha.avisos] == resposta["avisos"]  # 1 linha por aviso
+    assert all(a["ID"] == 1 and a["Documento"].startswith("Nota fiscal") for a in planilha.avisos)
+    assert _fundo(planilha.celula("Resumo", "Valor total")) == "FDF3E0"  # media (totais nao fecham)
+    assert _fundo(planilha.celula("Itens", "Descrição")) == "FDF3E0"  # itens: media
+    assert planilha.resumo["Número"] is None  # obrigatorio vazio na tela = celula vazia
+    assert _x_de_y_do_excel(planilha) == x_y
+
+
+def test_excel_marca_corrigidos_com_valor_original_e_o_resumo_continua_batendo_com_a_tela(tela):
+    tela.extrair("danfe_ok")
+    tela.page.click('[data-campo="emissor"] .valor-btn')
+    tela.campo("emissor").locator("textarea").fill("EMISSOR CORRIGIDO LTDA")
+    tela.page.keyboard.press("Enter")
+    tela.page.click('[data-campo="extra-1"] .valor-btn')  # CFOP
+    tela.campo("extra-1").locator("textarea").fill("6102")
+    tela.page.keyboard.press("Enter")
+    x_y = _x_de_y_da_tela(tela)  # corrigidos saem do "X de Y" na tela
+    planilha = tela.baixar_excel()
+
+    assert _x_de_y_do_excel(planilha) == x_y, "corrigidos tambem ficam fora do X de Y no Excel"
+    emissor = planilha.celula("Resumo", "Emissor")
+    assert emissor.value == "EMISSOR CORRIGIDO LTDA"
+    assert _fundo(emissor) == "E7F0EF" and emissor.font.italic
+    # o comentario traz o que o extrator tinha lido (nome + CNPJ, antes da correcao)
+    assert "DELL COMPUTADORES DO BRASIL LTDA (CNPJ 72.381.189/0010-01)" in emissor.comment.text
+    assert planilha.campos["CFOP"]["Confiança"] == "Corrigido" and planilha.campos["CFOP"]["Valor"] == "6102"
+    assert "5102" in planilha.celula("Campos adicionais", "Valor", 3).comment.text
+
+
+def test_excel_marca_campo_esvaziado_pelo_usuario_como_corrigido(tela):
+    tela.extrair("generico")
+    tela.page.click('[data-campo="emissor"] .valor-btn')
+    tela.campo("emissor").locator("textarea").fill("")
+    tela.page.keyboard.press("Enter")
+    celula = tela.baixar_excel().celula("Resumo", "Emissor")
+    assert celula.value is None and _fundo(celula) == "E7F0EF"
+    assert "Empresa Exemplo Ltda" in celula.comment.text
+
+
+def test_excel_usa_o_arquivo_que_gerou_o_resultado_e_nao_o_que_esta_selecionado(tela):
+    tela.extrair("danfe_ok")
+    tela.page.set_input_files("#file-input", str(tela.pdfs["boleto"]))  # escolhe outro, sem extrair
+    assert tela.baixar_excel().resumo["Arquivo"] == "danfe_ok.pdf"
