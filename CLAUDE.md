@@ -50,8 +50,14 @@ backend/tests/
   test_detector.py                      # selecionar_extrator() roteia pro extrator certo
   test_chave_acesso.py                  # digito verificador da chave de acesso (algoritmo publico)
   test_pdf_extractor.py                 # orquestracao digital->OCR (mocks) + 1 teste OCR real (skip se indisponivel)
+  test_avisos.py                        # avisos (lista) x aviso (string juntada)
+  e2e/                                  # testes de interface no navegador (Playwright) -- opt-in, ver "Testes"
+    helpers.py                          #   servidor uvicorn temporario + PDFs FICTICIOS gerados por PyMuPDF
+    conftest.py, test_interface_confianca.py
+    gerar_screenshot.py                 #   regenera docs/screenshot.png (README) com dados ficticios
+backend/requirements-dev.txt            # so dev/teste de interface (playwright); requirements.txt fica so com o de producao
 frontend/
-  index.html, style.css, script.js
+  index.html, style.css, script.js   # resultado com chips de confianca, banner de avisos, edicao de campos
 ```
 
 ## Decisão de arquitetura central: modo básico vs modo IA
@@ -426,8 +432,14 @@ públicos — CNPJ de empresa, não dado pessoal).
   comparada com o rótulo nacional `"Valor Total dos Produtos"`
   (tolerância de 0.02 pra arredondamento). Se não bater, vira aviso em
   `resultado.avisos` em vez de devolver a tabela calada.
-- Confiança `"media"` (heurística posicional) pra `itens` e pra `CFOP`
-  (moda dos CFOPs das linhas da tabela, exposto em `campos_adicionais`).
+- Confiança de `itens`: `"media"` (heurística posicional), que **sobe pra
+  `"alta"` quando a soma dos itens fecha com o Valor Total dos Produtos**
+  da grade de totais (evidência independente: o total vem de outra parte do
+  documento) — e só se TODOS os itens tiverem total numérico (um item sem
+  total contaria como 0 e poderia "fechar" a soma por acaso). Se a soma não
+  fecha: continua `"media"` e gera aviso; sem Valor Total dos Produtos pra
+  conferir: `"media"`. `CFOP` (moda dos CFOPs das linhas da tabela, em
+  `campos_adicionais`) fica `"media"`.
 - Só roda quando `contexto.paginas_palavras` existe — `None` quando a
   origem do texto é OCR (sem posição confiável de palavra); tabela de
   itens via OCR fica fora de escopo, documentado como limitação
@@ -477,6 +489,130 @@ não existe lógica de extração de campos duplicada para OCR.
   regex especificamente, e `comum.corrigir_confusao_ocr()` normaliza o
   trecho capturado antes de usar. Aplicar a correção no texto inteiro
   destruiria palavras normais que por acaso tenham essas letras.
+
+## Interface: confiança e edição (etapa 5)
+
+O frontend (`index.html`, `script.js`, `style.css`, sem framework) mostra a
+confiança de cada campo (`resultado.confiancas`), lista os avisos e deixa o
+usuário **corrigir qualquer campo antes de exportar**. Motivo de a confiança
+não poder bloquear a edição: já saiu emissor errado com confiança `"alta"`.
+
+**Indicador por campo** — sempre ícone (forma diferente) + TEXTO + cor, nunca
+só cor:
+
+| Estado | Ícone | Texto | Quando |
+|---|---|---|---|
+| alta | círculo ✔ | Alta | `confiancas[campo] == "alta"` |
+| média | triângulo ▲ | Média | `"media"` |
+| baixa | círculo ✖ | Baixa | `"baixa"` |
+| vazio | círculo tracejado | Vazio | campo **obrigatório** sem valor |
+| corrigido | lápis | Corrigido | o usuário mudou o valor |
+| (nenhum) | — | — | opcional vazio (`—` neutro), tipo do documento, e tudo no modo IA |
+
+Cores: `alta` usa o único token novo (`--color-success` `#1b6b3a` sobre
+`#e6f4ea`, 5,8:1); média/baixa reaproveitam os tokens de warning/danger já
+existentes (5,4:1 e 5,7:1). Todos os pares texto/fundo dos chips, dicas e
+resumo medidos no navegador (estilos computados) ≥ 4,5:1 (AA).
+
+**Estado derivado, não flags.** O estado de um campo é calculado a cada
+render a partir de (valor original, valor atual, obrigatoriedade,
+confiança) — `estadoDoCampo` em `script.js`. Ordem: vazio (obrigatório) /
+opcional-vazio → `corrigido` (atual ≠ original) → confiança do backend. Se o
+usuário desfaz a edição, o campo volta sozinho ao estado original.
+
+**Edição.** Todos os campos são editáveis:
+- **Já abertos como input:** `baixa` e `vazio` obrigatório (destacados: borda
+  lateral vermelha / caixa tracejada + dica "Confira e corrija." /
+  "Preencha este campo.").
+- **Abrem ao clicar** (valor com ícone de lápis; é um `<button>`, então
+  funciona por teclado): `alta`, `media`, opcional vazio, corrigido, e o tipo.
+- **Enter** confirma, **Esc** descarta, sair do campo (blur) confirma. O valor
+  vai para `ultimoResultado.documento` na hora (a cada tecla), e é esse objeto
+  que o botão Excel envia — a correção sai no `.xlsx` sem mexer no backend.
+- `valor_total` aceita formato BR (`1.500,50`, `R$ 1.500,50`, `1500.50`) e vai
+  como **número**; texto não parseável fica como string (o schema aceita
+  `float | str`). Exibido em pt-BR (`1.500,50`). Campo apagado vira `null`
+  (`campos_adicionais` exige string: vira `""`).
+- **Tipo do documento** é um `<select>`; mudar o tipo muda os campos
+  obrigatórios na hora (re-renderiza todos).
+- A tabela de itens NÃO é editável (só ganha o chip de confiança `itens`).
+
+**Exibição formatada — só na tela; o valor interno não muda.** O JSON bruto e o
+Excel continuam com o valor original (o `.xlsx` sai de `ultimoResultado`, que
+nunca recebe o texto formatado):
+- **Itens em pt-BR** (`215.03` → `215,03`): quantidade com até 4 casas, valor
+  unitário 2–4 (preço unitário pode ter 4 casas), valor total 2. O `valor_total`
+  do documento também é pt-BR (2 casas). Valor que não virou número fica como
+  veio. No Excel os números continuam numéricos (somáveis).
+- **Tipo do documento com rótulo amigável** (`ROTULOS_TIPO`): "Boleto", "Nota
+  fiscal", "Pedido de compra", "Relatório", "Desconhecido" — na tela e nas
+  opções do `<select>`. O `value` interno (`nota_fiscal`...) é o que vai pro JSON
+  e pro Excel. Tipo fora da lista aparece cru.
+- **Chave de Acesso em blocos de 4 dígitos** (padrão impresso da DANFE, 11
+  blocos), também dentro do editor. Os espaços são só exibição: ao editar, o
+  valor volta a ser só dígitos, e abrir/confirmar sem mudar NÃO conta como
+  correção (o estado compara o valor sem espaços).
+
+**Campos obrigatórios por tipo de documento** (`CAMPOS_OBRIGATORIOS` em
+`script.js`). Obrigatório vazio → destaque, já aberto, e conta como "vazio" no
+resumo. Opcional vazio → `—` neutro, editável ao clicar, fora do resumo.
+
+| `tipo_documento` | Obrigatórios |
+|---|---|
+| `nota_fiscal` (inclui DANFE) | `emissor`, `destinatario`, `numero_documento`, `data_emissao`, `valor_total` |
+| `boleto` | os mesmos + `data_vencimento` |
+| `pedido_compra` | os mesmos da nota fiscal *(escolha minha, não pedida)* |
+| `relatorio` | nenhum *(escolha minha)* |
+| `desconhecido` e qualquer outro tipo (ex.: um que o modo IA invente) | nenhum |
+
+`campos_adicionais` nunca são obrigatórios. Ex.: `data_vencimento` numa DANFE é
+opcional — aparece `—` sem destaque e não entra no resumo.
+
+**Resumo no topo** (`aria-live="polite"`, texto — não depende de cor):
+"X de Y campos com alta confiança · N para revisar · M vazios · K corrigidos".
+- Y = campos **com valor e com confiança** (documento sem o tipo,
+  `campos_adicionais` e `itens`); X = os de confiança `alta`; "para revisar" =
+  `media` + `baixa`.
+- **Vazios e corrigidos ficam à parte** (não entram em X nem em Y): um campo
+  obrigatório vazio não derruba a proporção, e um corrigido não conta como "alta
+  confiança" só porque o usuário mexeu. Opcional vazio fica fora de tudo.
+- **Modo IA** (`confiancas == {}`): sem chips de confiança nem "X de Y"; nota
+  "Confiança por campo indisponível no modo IA"; vazios e corrigidos continuam
+  aparecendo e a edição continua funcionando.
+
+**Banner de avisos:** largura total no topo do card de resultado
+(`role="status"`, "Atenção"). Lista `resultado.avisos` (uma linha por aviso);
+cai para a string `aviso` se `avisos` não vier (compatibilidade). Backend:
+`ExtractionResult.avisos: list[str]` foi adicionado, `aviso` foi mantido (mesmo
+conteúdo juntado por espaço).
+
+**Bug real achado na validação (reentrância).** Trocar o editor que está com
+foco (`replaceWith`) faz o Chrome disparar `blur` **síncrono** no meio da
+troca; o handler de `blur` chamava `finalizarEdicao` de novo, que redesenhava o
+campo por dentro do redesenho, e o `replaceWith` externo lançava exceção — o
+foco nunca voltava ao botão depois do Enter (o resumo saía certo só por
+acaso). Corrigido com uma trava (`campo.finalizando`). Lição: erro de JS no
+meio de um handler pode deixar a tela "quase certa"; a validação captura
+`pageerror`.
+
+**Como é validado:** testes e2e versionados em `backend/tests/e2e/`
+(Playwright num Chromium real, 19 testes). PDFs **fictícios** gerados por
+PyMuPDF (`helpers.gerar_pdfs`) — nunca documento real. Cobrem: chips e contagem
+do resumo conferidos contra o JSON da resposta por uma conta independente em
+Python, banner com 2 avisos, campos abertos/fechados por estado, clique e teclado
+(Tab/Enter/Esc), correção refletida no JSON bruto e no `.xlsx` baixado (lido com
+`openpyxl`), `valor_total` numérico, mudança de tipo, a exibição formatada (itens
+em pt-BR, tipo amigável, chave em blocos — sempre conferindo que o valor interno
+não mudou), modo IA (resposta simulada), nomes acessíveis (`aria-labelledby`) e
+ids únicos, contraste WCAG AA computado dos estilos reais, celular de 390px sem
+rolagem horizontal. **Todo teste falha se houver erro de console/JS** (fixture
+`tela`): um erro no meio de um handler já deixou a tela "quase certa". Os testes
+foram conferidos por mutação (desligar a formatação pt-BR, o rótulo do tipo ou a
+trava de reentrância faz o teste correspondente falhar).
+
+`docs/screenshot.png` (README) é gerado por `tests/e2e/gerar_screenshot.py` a
+partir dos mesmos PDFs sintéticos — nunca de um documento real (uma captura de
+tela com dado real já foi um vetor de vazamento neste projeto).
 
 ## Convenções
 
@@ -552,6 +688,21 @@ informações complementares, fragmentos do cabeçalho) e a validação de soma.
 linhas (ver "Diagnosticando um PDF real"). Chama as funções dos endpoints
 direto com um `UploadFile` montado na mão, porque `httpx` (TestClient) não
 está nas dependências.
+
+**Testes e2e (interface, opt-in).** `tests/e2e/` roda a interface num Chromium
+real e **não** entra no `pytest tests` normal (que pula os 19 e2e sem subir
+servidor nem navegador, e não exige Playwright). Dependências separadas:
+
+```bash
+cd backend
+pip install -r requirements-dev.txt      # inclui requirements.txt + playwright
+playwright install chromium
+pytest tests/e2e --e2e -v
+```
+
+O servidor de teste sobe numa porta livre, com `ANTHROPIC_API_KEY` vazia (sempre
+modo básico, mesmo que a máquina tenha chave). Se o Chromium não estiver
+instalado, os testes são pulados com a instrução em vez de falhar.
 
 `tests/test_pdf_extractor.py` testa a orquestração digital->OCR com
 mocks (`monkeypatch` em `_tentar_ocr`/`_OCR_IMPORTADO`), então passa
@@ -631,12 +782,10 @@ Não implementado ainda / possíveis próximos passos:
   rótulo exato num dump real (série, natureza da operação, data de saída,
   IE do emitente, ICMS/frete como campos de documento — não agregados da
   tabela).
-- Indicador de confiança na interface (marcador discreto pra campos
-  `"media"`/`"baixa"` em `resultado.confiancas`) — etapa 5 do plano, ainda
-  não iniciada. **Anotação pra essa etapa:** `itens` da DANFE sai `"media"`
-  (heurística posicional) mesmo quando a soma dos itens bate com o "Valor
-  Total dos Produtos" da grade de totais; quando a soma fechar, deveria ser
-  `"alta"`. Não implementado (só anotado).
+- (Etapa 5 — indicador de confiança na interface — **implementada**, ver
+  "Interface: confiança e edição"; falta só a validação manual do usuário no
+  navegador. A anotação de que `itens` da DANFE deve ser `"alta"` quando a
+  soma fecha também já está implementada, ver "Tabela de itens".)
 - Excel: as duas abas (Resumo/Itens) já existem, falta só formatação
   (cabeçalho em negrito, largura de coluna) — etapa 6 do plano, ainda não
   iniciada.

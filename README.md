@@ -53,6 +53,16 @@ independente de como o documento foi processado. A resposta da API sempre
 inclui um campo `modo_extracao` (`"basico"` ou `"ia"`), exibido como um
 badge na interface.
 
+### Confiança e correção na interface
+
+Cada campo mostra um indicador de confiança (**Alta**, **Média**, **Baixa**;
+sempre com ícone e texto, nunca só cor), há um resumo no topo ("X de Y campos
+com alta confiança") e um banner com os avisos da extração. **Qualquer campo
+pode ser corrigido antes de exportar** — campos de confiança baixa ou
+obrigatórios vazios já vêm abertos para edição — e a correção sai no Excel.
+Detalhes (campos obrigatórios por tipo de documento, regras do resumo, o que é
+só exibição) em `CLAUDE.md`, seção "Interface: confiança e edição".
+
 ## Origem do texto: digital vs OCR
 
 Antes de qualquer extração de campos, o sistema decide de onde vem o
@@ -155,6 +165,16 @@ verdade. Os testes de OCR usam mocks pra validar a orquestração
 digital→OCR sem depender do Tesseract estar instalado; há um teste "de
 verdade" com OCR real que roda quando o Tesseract e o idioma português
 estão disponíveis, e é pulado (não falha) quando não estão.
+
+Os testes de interface (Chromium real via Playwright, 19 testes, com PDFs
+fictícios gerados na hora) são opt-in e usam dependências separadas:
+
+```bash
+cd backend
+pip install -r requirements-dev.txt
+playwright install chromium
+pytest tests/e2e --e2e -v
+```
 
 ## Decisões técnicas
 

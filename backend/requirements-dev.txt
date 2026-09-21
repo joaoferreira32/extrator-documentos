@@ -1,0 +1,8 @@
+# Dependencias so de desenvolvimento/teste de interface (nao entram em producao).
+# Instalacao:
+#   pip install -r requirements-dev.txt
+#   playwright install chromium
+# Rodar os testes e2e (opt-in, precisam de navegador):
+#   pytest tests/e2e --e2e -v
+-r requirements.txt
+playwright>=1.49
