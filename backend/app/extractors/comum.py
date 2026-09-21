@@ -83,23 +83,22 @@ def contar_digitos(s: str) -> int:
 
 
 def extrair_valor_rotulo(
-    texto: str, rotulos: list[str], preferir_linha_anterior: bool = False
+    texto: str, rotulos: list[str], aceitar_linha_seguinte: bool = False
 ) -> Optional[str]:
     """Procura um rotulo de valor monetario (ex: "Desconto", "Valor a
-    Pagar", "Valor do ICMS") e o numero BR mais proximo dele: primeiro na
-    mesma linha (com ou sem "R$"/"=" no meio), senao numa linha vizinha.
+    Pagar", "Valor do ICMS") e o numero BR logo depois dele na mesma linha
+    -- com ou sem "R$"/"=" no meio.
 
-    `preferir_linha_anterior` controla a ORDEM da busca nas vizinhas
-    (anterior primeiro vs seguinte primeiro) -- nao da pra tentar as duas
-    e aceitar "a que bater", porque numa grade de totais tipo DANFE toda
-    linha vizinha a um rotulo tem algum valor monetario (e o campo
-    ANTERIOR ou o campo SEGUINTE da grade), entao teria sempre um "falso
-    positivo" disponivel dos dois lados. Documento real confirmado: DANFE
-    imprime o valor ACIMA da legenda (ex: "229,00" na linha logo antes de
-    "VALOR TOTAL DA NOTA", e a linha DEPOIS pertence ao PROXIMO campo da
-    grade, nao a este) -- inverso do padrao "rotulo: valor"/"rotulo entao
-    valor" que boleto usa. Default False preserva a ordem original
-    (seguinte primeiro), que e o comportamento ja testado do boleto."""
+    `aceitar_linha_seguinte` (opt-in, default False): se o rotulo aparece
+    mas NAO ha valor depois dele na mesma linha, aceita o primeiro valor
+    monetario da linha SEGUINTE. E o layout de cabecalho de tabela: rotulo
+    numa linha, valor na proxima -- ex. real do boleto:
+        "Valor Documento (-) desconto (-) outras deduções ..."
+        "1.000,00"
+    So o boleto liga isso (pro "Valor do Documento"). Fica desligado por
+    padrao porque numa DANFE toda linha vizinha de um rotulo tem valores de
+    OUTROS campos -- ali a leitura e por posicao na grade de totais
+    (`danfe.extrair_totais_grade`)."""
     linhas = texto.splitlines()
     for i, linha in enumerate(linhas):
         linha_lower = linha.lower()
@@ -111,13 +110,10 @@ def extrair_valor_rotulo(
             m = VALOR_NUM_RE.search(resto)
             if m:
                 return corrigir_confusao_ocr(m.group(1))
-
-            ordem = (i - 1, i + 1) if preferir_linha_anterior else (i + 1, i - 1)
-            for j in ordem:
-                if 0 <= j < len(linhas):
-                    m = VALOR_NUM_RE.search(linhas[j])
-                    if m:
-                        return corrigir_confusao_ocr(m.group(1))
+            if aceitar_linha_seguinte and i + 1 < len(linhas):
+                m = VALOR_NUM_RE.search(linhas[i + 1])
+                if m:
+                    return corrigir_confusao_ocr(m.group(1))
     return None
 
 

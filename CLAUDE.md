@@ -159,6 +159,20 @@ fixture real em `test_extractors_boleto.py`):
   virava destinatário; sem (b), a seção "Recibo do Sacado" (que contém a
   palavra "Sacado") fazia o rótulo bater ali em vez de no campo de
   verdade, capturando o rodapé "Pág: 1 de 1" como se fosse o nome.
+- **"Valor do Documento" vem na linha SEGUINTE ao rótulo** (cabeçalho de
+  tabela): `"Valor Documento (-) desconto (-) outras deduções ..."` e, na
+  linha de baixo, `"1.000,00"`. `comum.extrair_valor_rotulo` só lia a mesma
+  linha, então esse campo não era extraído — o código ORIGINAL
+  (pré-refatoração) também não o extraía desse texto (verificado rodando o
+  `basic_extractor` de `9d616bf` sobre a fixture: 6 campos, sem ele). Ele
+  passou a sair (7 campos) por efeito colateral de um fallback bidirecional
+  que adicionei pra DANFE em 5e56783; ao **restaurar** a função "ao
+  original" o campo sumiu de novo, e **nenhum teste travava o campo**, então
+  a suíte passou com o boleto "quebrado". Hoje: `extrair_valor_rotulo(...,
+  aceitar_linha_seguinte=True)`, **opt-in** e só pro Valor do Documento
+  (`boleto.py`); o default continua só a mesma linha (usado pela DANFE, onde
+  a linha vizinha é de OUTRO campo). `test_boleto_traz_os_7_campos_
+  adicionais` trava os 7 campos com valor, ordem e confiança.
 - "Nosso Número" às vezes vem como "02 / 10200000001-9" (prefixo de
   carteira / número real) — `boleto._extrair_valor_numerico_por_rotulo`
   reconhece esse formato e usa a parte depois da barra.
@@ -248,6 +262,17 @@ vizinha** (`documento auxiliar`, `danfe`). O emissor do `GenericExtractor` é
 sempre descartado; se a legenda não existe (outro layout), o genérico só
 sobrevive com confiança `"baixa"` e nunca se contiver o título.
 
+**O CNPJ do emissor** (`_cnpjs_do_bloco_do_emitente`) fica varias linhas
+depois do nome — no PDF real, **10 linhas** (nome na linha 40, CNPJ na 50:
+`"INSCRIÇÃO ESTADUAL INSCR. ESTADUAL DO SUBST. TRIBUT. CNPJ"` e
+`"748241245113 72.381.189/0010-01"`). A busca antiga usava a janela fixa de
+10 de `documento_fiscal_proximo` (`linhas[40:50]`), que perdia o CNPJ **por
+uma linha** — o emissor saía sem CNPJ e com confiança `"media"`. A fixture
+antiga escondia isso porque tinha o CNPJ a ~7 linhas. Agora o bloco do
+emitente vai do nome até o rótulo do destinatário (`NOME/RAZÃO SOCIAL`, onde
+começa outra entidade cujo CNPJ/CPF não pode virar o do emissor), teto de 40
+linhas; havendo mais de um CNPJ no bloco, prefere o que bate com a chave.
+
 **3. Destinatário** (`danfe.extrair_destinatario`). Rótulos e valores vêm
 COLADOS na mesma linha (pdfplumber junta a linha de rótulos e a de valores
 quando estão próximas na vertical):
@@ -257,8 +282,8 @@ quando estão próximas na vertical):
 O nome é o que fica **entre o último rótulo da sequência inicial e o
 CPF/CNPJ**. Pula rótulos consecutivos do bloco (`ROTULOS_BLOCO_DESTINATARIO`,
 com limite de palavra: `"UF"` não casa dentro de `"UFRJ"`), corta no
-primeiro CPF/CNPJ, data ou rótulo, e devolve **só o nome** (sem CPF).
-Também aceita o layout de valores na linha seguinte. O destinatário do
+primeiro CPF/CNPJ, data ou rótulo, e devolve `"NOME (CPF 000...)"` /
+`"NOME (CNPJ ...)"` — **mesmo formato do emissor e do boleto**. Também aceita o layout de valores na linha seguinte. O destinatário do
 `GenericExtractor` é descartado (buscava `"Destinatário"`, que bate no título
 da seção e devolvia uma linha inteira de rótulos).
 
@@ -274,14 +299,42 @@ saía `"baixa"`. Agora:
 - Destinatário: `"alta"` quando o nome fica encaixado antes do CPF/CNPJ
   (estrutura confirmada), `"media"` sem isso.
 
-**5. `valor_total` e grade de totais.** Na grade de totais o **valor vem
-ANTES do rótulo** (legenda por baixo da caixa: `"229,00"` na linha logo
-antes de `"VALOR TOTAL DA NOTA"`) — inverso do padrão "rótulo: valor". Cada
-linha vizinha a um rótulo dessa grade tem *algum* valor monetário (o campo
-anterior ou o seguinte), então `comum.extrair_valor_rotulo` tem o parâmetro
-`preferir_linha_anterior` (DANFE passa `True`; boleto usa o default
-`False`, ordem original já testada). O `valor_total` da DANFE sobrescreve o
-genérico (que exige `"R$"`, que a DANFE não imprime).
+**5. Grade de totais: rótulo → valor de MESMA POSIÇÃO** (`danfe.
+extrair_totais_grade`). Cada "linha" da grade sai do pdfplumber como **uma
+linha de N rótulos seguida de uma linha de N valores**:
+
+    BASE DE CÁLCULO DO ICMS VALOR DO ICMS BASE DE CÁLCULO ICMS ST VALOR DO ICMS SUBSTITUIÇÃO VALOR TOTAL DOS PRODUTOS
+    229,00 41,22 0,00 0,00 215,03
+    VALOR DO FRETE VALOR DO SEGURO DESCONTO OUTRAS DESPESAS ACESSÓRIAS VALOR TOTAL DO I.P.I. VALOR TOTAL DA NOTA
+    0,00 0,00 0,00 0,00 13,97 229,00
+
+O valor de um rótulo é o de mesma posição (5º rótulo → 5º valor), **nunca
+"o número mais próximo"**. **Bug real corrigido**: a versão anterior pegava o
+número mais próximo (e eu tinha documentado aqui que "o valor vem ANTES do
+rótulo" — hipótese tirada de um trecho colado à mão, **refutada** pelas
+linhas reais). Resultado: `Valor Total dos Produtos` saía 229,00 (a base do
+ICMS, 1º valor da linha) em vez de 215,03 → aviso falso de soma; e
+`valor_total = 229` estava certo **só por coincidência** (nota = produtos +
+IPI = 215,03 + 13,97 = base do ICMS).
+
+Regras (para não chutar): a linha só conta se, tirando os rótulos
+conhecidos, sobram só valores/espaços; a quantidade de valores tem que ser
+**igual** à de rótulos, senão os campos daquela linha não são devolvidos
+(rótulo desconhecido, valor faltando...); valores na linha seguinte só valem
+com 2+ rótulos (com 1 rótulo o número da próxima linha é ambíguo). A
+confiança de `valor_total` é `"alta"` quando a fórmula do total fecha
+(`totais_fecham`: produtos − desconto + ICMS ST + frete + seguro + outras
+despesas + IPI = total da nota), `"media"` + aviso quando a grade foi lida e
+não fecha. Sem grade (outro layout), tenta `"Valor Total da Nota <valor>"` na
+mesma linha (`comum.extrair_valor_rotulo` com o **default**, só a mesma
+linha — a DANFE não liga `aceitar_linha_seguinte`, ver "Boleto"), e por fim o
+fallback genérico (exige `"R$"`). A soma dos itens é conferida contra
+`valor_produtos` da grade.
+
+Casamento é por **ordem**, não por coordenada x: não tenho coordenadas reais
+dessa grade e não vou chutar; a checagem N = N e a fórmula dos totais fazem o
+papel de validação. Se for preciso confirmar por x, pedir
+`/debug/extract-words` da região.
 
 **6. Datas.** O documento imprime `"15/4/2026"` (mês sem zero). `DATA_RE`
 aceita 1–2 dígitos e `comum.normalizar_data` devolve sempre `dd/mm/aaaa`
@@ -481,11 +534,15 @@ real nenhuma).
 `tests/fixtures/danfe_*` (texto bruto + palavras posicionadas de uma DANFE
 real, destinatário fictício). **O texto bruto (`danfe_real_anonimizado.txt`)
 é um COMPOSTO de trechos reais, não as 84 linhas que o extrator recebe**:
-vem de `/debug/extractor-input` (linhas 00-02, 14-15, 38, 39-41, 51-52,
-75-76 — texto girado, emitente, destinatário colado, cabeçalho e produto) mais
-um trecho anterior (endereço/IE/CNPJ/chave/totais) com a adjacência entre
-blocos ASSUMIDA, e sem linha de número da nota. O docstring do teste diz
-isso; testes que montam texto à mão estão marcados `SINTETICO`. **Deve ser
+vem de `/debug/extractor-input` (linhas 00-02, 14-15, 38, 39-41, 49-50,
+51-52, 53-56, 75-76 — texto girado, emitente, IE/CNPJ, destinatário colado,
+grade de totais, cabeçalho e produto) mais um trecho anterior
+(endereço/chave) com a adjacência entre blocos ASSUMIDA, e sem linha de
+número da nota. **Cuidado com a adjacência assumida**: foi ela que escondeu o
+bug do CNPJ (na fixture o CNPJ ficava a ~7 linhas do nome, no real a 10) —
+por isso a distância real é coberta por teste com preenchimento sintético. O
+docstring do teste diz isso; testes que montam texto à mão estão marcados
+`SINTETICO`. **Deve ser
 substituído pelas 84 linhas completas** quando disponíveis. Cobre também os
 bugs de tabela documentados (texto vertical, valores colados, corte por
 informações complementares, fragmentos do cabeçalho) e a validação de soma.
@@ -576,7 +633,10 @@ Não implementado ainda / possíveis próximos passos:
   tabela).
 - Indicador de confiança na interface (marcador discreto pra campos
   `"media"`/`"baixa"` em `resultado.confiancas`) — etapa 5 do plano, ainda
-  não iniciada.
+  não iniciada. **Anotação pra essa etapa:** `itens` da DANFE sai `"media"`
+  (heurística posicional) mesmo quando a soma dos itens bate com o "Valor
+  Total dos Produtos" da grade de totais; quando a soma fechar, deveria ser
+  `"alta"`. Não implementado (só anotado).
 - Excel: as duas abas (Resumo/Itens) já existem, falta só formatação
   (cabeçalho em negrito, largura de coluna) — etapa 6 do plano, ainda não
   iniciada.

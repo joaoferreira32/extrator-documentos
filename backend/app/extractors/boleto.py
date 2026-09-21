@@ -141,7 +141,11 @@ class BoletoExtractor(ExtratorDocumento):
             campos_adicionais.append(CampoAdicional(campo="Nosso Número", valor=nosso_numero))
             confiancas["Nosso Número"] = "alta"
 
-        valor_documento = comum.extrair_valor_rotulo(texto, ROTULOS_VALOR_DOCUMENTO)
+        # O rotulo "Valor Documento" e cabecalho de tabela e o valor vem na LINHA
+        # SEGUINTE no boleto real -- por isso aceitar_linha_seguinte so aqui.
+        valor_documento = comum.extrair_valor_rotulo(
+            texto, ROTULOS_VALOR_DOCUMENTO, aceitar_linha_seguinte=True
+        )
         if valor_documento:
             campos_adicionais.append(
                 CampoAdicional(campo="Valor do Documento", valor=valor_documento)

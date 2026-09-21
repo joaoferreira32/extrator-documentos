@@ -26,6 +26,7 @@ destinatario, numero_documento, data_emissao, valor_total) -- mesma
 qualidade que uma DANFE ja tinha antes desta refatoracao, sem regressao.
 """
 import re
+import unicodedata
 
 from app.extractors import comum
 from app.extractors.base import ContextoExtracao, ExtratorDocumento, ResultadoExtracao
@@ -46,6 +47,45 @@ MARCADORES_DETECCAO = [
 
 ROTULOS_VALOR_TOTAL_PRODUTOS = ["Valor Total dos Produtos", "Valor total dos produtos"]
 ROTULOS_VALOR_TOTAL_NOTA = ["Valor Total da Nota", "Valor total da nota", "Valor Total da NF-e"]
+
+# GRADE DE TOTAIS: cada "linha" da grade sai do pdfplumber como UMA linha de
+# N rotulos seguida de UMA linha de N valores (confirmado com a saida de
+# /debug/extractor-input de uma DANFE real):
+#   "BASE DE CÁLCULO DO ICMS VALOR DO ICMS BASE DE CÁLCULO ICMS ST VALOR DO ICMS SUBSTITUIÇÃO VALOR TOTAL DOS PRODUTOS"
+#   "229,00 41,22 0,00 0,00 215,03"
+#   "VALOR DO FRETE VALOR DO SEGURO DESCONTO OUTRAS DESPESAS ACESSÓRIAS VALOR TOTAL DO I.P.I. VALOR TOTAL DA NOTA"
+#   "0,00 0,00 0,00 0,00 13,97 229,00"
+# O valor de um rotulo e o de MESMA POSICAO na linha de valores (5º rotulo ->
+# 5º valor), nao "o numero mais proximo": cada linha vizinha tem valores de
+# OUTROS campos (o total da nota so parecia certo porque o primeiro valor da
+# linha de cima, a base do ICMS, coincidia com ele: nota = produtos + IPI).
+# Chaves sem acento/maiusculas -- a linha e normalizada antes de comparar.
+_ROTULOS_GRADE_TOTAIS = {
+    "BASE DE CALCULO DO ICMS": "base_icms",
+    "VALOR DO ICMS": "valor_icms",
+    "BASE DE CALCULO ICMS ST": "base_icms_st",
+    "VALOR DO ICMS SUBSTITUICAO": "valor_icms_st",
+    "VALOR TOTAL DOS PRODUTOS": "valor_produtos",
+    "VALOR DO FRETE": "frete",
+    "VALOR DO SEGURO": "seguro",
+    "DESCONTO": "desconto",
+    "OUTRAS DESPESAS ACESSORIAS": "outras_despesas",
+    "VALOR TOTAL DO I.P.I.": "ipi",
+    "VALOR TOTAL DO IPI": "ipi",
+    "VALOR TOTAL DA NOTA": "valor_nota",
+}
+_RE_ROTULO_GRADE = re.compile(
+    r"(?<!\w)(?:"
+    + "|".join(re.escape(r) for r in sorted(_ROTULOS_GRADE_TOTAIS, key=len, reverse=True))
+    + r")(?!\w)"
+)
+
+# O CNPJ do emitente fica no bloco do emitente, varias linhas depois do nome
+# (endereco, IE...): no PDF real, 10 linhas depois -- fora da janela de 10 que
+# `documento_fiscal_proximo` olhava. O bloco vai ate o rotulo do destinatario
+# (onde comeca outra entidade, cujo CNPJ/CPF NAO pode ser tomado pelo do
+# emitente), com um teto de linhas de seguranca.
+_LIMITE_LINHAS_BLOCO_EMITENTE = 40
 
 # --- Rotulos reais de uma DANFE (confirmados com a saida de /debug/
 # extractor-input de uma DANFE real; ver CLAUDE.md, "Layout real de uma
@@ -172,16 +212,17 @@ def _pular_rotulos_iniciais(texto: str) -> str:
         texto = texto[m.end() :].lstrip(" :-")
 
 
-def _cortar_nome_no_documento(texto: str) -> tuple[str, bool]:
+def _cortar_nome_no_documento(texto: str) -> tuple[str, str | None]:
     """Corta o nome no primeiro CPF/CNPJ, data ou rotulo do bloco.
-    Devolve (nome, cortou_num_documento) -- o segundo valor e a evidencia de
-    que o nome esta encaixado entre os rotulos e o CPF/CNPJ dele."""
+    Devolve (nome, documento_fiscal): `documento_fiscal` ("CPF 000..."/"CNPJ
+    ...") so vem preenchido quando o corte foi NO documento -- e a evidencia
+    de que o nome esta encaixado entre os rotulos e o CPF/CNPJ dele."""
     cortes = []
-    m_doc = None
-    for regex in (comum.CNPJ_RE, comum.CPF_RE):
+    m_doc, tipo_doc = None, None
+    for tipo, regex in (("CNPJ", comum.CNPJ_RE), ("CPF", comum.CPF_RE)):
         m = regex.search(texto)
         if m and (m_doc is None or m.start() < m_doc.start()):
-            m_doc = m
+            m_doc, tipo_doc = m, tipo
     if m_doc:
         cortes.append(m_doc.start())
     for regex in (comum.DATA_RE, _RE_ROTULO_BLOCO):
@@ -189,15 +230,19 @@ def _cortar_nome_no_documento(texto: str) -> tuple[str, bool]:
         if m:
             cortes.append(m.start())
     fim = min(cortes) if cortes else len(texto)
-    return texto[:fim].strip(" :-"), bool(m_doc) and m_doc.start() == fim
+    documento = None
+    if m_doc and m_doc.start() == fim:
+        documento = f"{tipo_doc} {comum.corrigir_confusao_ocr(m_doc.group(0))}"
+    return texto[:fim].strip(" :-"), documento
 
 
-def extrair_destinatario(linhas: list[str]) -> tuple[str | None, str]:
-    """Nome do destinatario a partir de "NOME/RAZÃO SOCIAL". Tenta o resto
-    da MESMA linha (layout real: rotulos e valores colados numa linha so) e,
-    se ali so sobrarem rotulos, a linha seguinte (rotulo e valor em linhas
-    separadas). Devolve (nome, confianca): "alta" quando o nome fica
-    encaixado antes do CPF/CNPJ (estrutura confirmada), "media" senao."""
+def extrair_destinatario(linhas: list[str]) -> tuple[str | None, str | None, str]:
+    """Destinatario a partir de "NOME/RAZÃO SOCIAL". Tenta o resto da MESMA
+    linha (layout real: rotulos e valores colados numa linha so) e, se ali
+    so sobrarem rotulos, a linha seguinte (rotulo e valor em linhas
+    separadas). Devolve (nome, documento_fiscal, confianca): "alta" quando o
+    nome fica encaixado antes do CPF/CNPJ (estrutura confirmada), "media"
+    senao (documento_fiscal None)."""
     for i, linha in enumerate(linhas):
         m = _ROTULO_NOME_DESTINATARIO_RE.search(linha)
         if not m:
@@ -206,16 +251,32 @@ def extrair_destinatario(linhas: list[str]) -> tuple[str | None, str]:
         if i + 1 < len(linhas):
             candidatos.append(linhas[i + 1])
         for texto in candidatos:
-            nome, com_documento = _cortar_nome_no_documento(_pular_rotulos_iniciais(texto))
+            nome, documento = _cortar_nome_no_documento(_pular_rotulos_iniciais(texto))
             if nome and comum.parece_nome(nome):
-                return nome, "alta" if com_documento else "media"
-    return None, ""
+                return nome, documento, "alta" if documento else "media"
+    return None, None, ""
 
 
-def extrair_emissor(linhas: list[str]) -> tuple[str | None, str | None]:
-    """Nome do emitente (e o CPF/CNPJ que vier depois, se houver) a partir
-    da legenda "Identificação do emitente": o nome esta na mesma linha (se
-    sobrar algo depois do titulo) ou na linha seguinte."""
+def _cnpjs_do_bloco_do_emitente(linhas: list[str], indice_nome: int) -> list[str]:
+    """CNPJs (so os numeros formatados) do bloco do emitente: da linha do
+    nome ate o rotulo do destinatario (ou o teto de linhas)."""
+    fim = min(indice_nome + _LIMITE_LINHAS_BLOCO_EMITENTE, len(linhas))
+    for j in range(indice_nome + 1, fim):
+        if _ROTULO_NOME_DESTINATARIO_RE.search(linhas[j]):
+            fim = j
+            break
+    trecho = "\n".join(linhas[indice_nome:fim])
+    return [comum.corrigir_confusao_ocr(m.group(0)) for m in comum.CNPJ_RE.finditer(trecho)]
+
+
+def extrair_emissor(linhas: list[str], cnpj_chave: str | None = None) -> tuple[str | None, str | None]:
+    """Nome do emitente e seu CNPJ ("CNPJ 72.381...", se houver) a partir da
+    legenda "Identificação do emitente": o nome esta na mesma linha (se
+    sobrar algo depois do titulo) ou na linha seguinte.
+
+    O CNPJ e procurado no bloco do emitente inteiro (ate o rotulo do
+    destinatario). Havendo mais de um, prefere o que bate com `cnpj_chave`
+    (os 14 digitos embutidos na chave de acesso)."""
     for i, linha in enumerate(linhas):
         m = _ROTULO_EMITENTE_RE.search(linha)
         if not m:
@@ -226,10 +287,78 @@ def extrair_emissor(linhas: list[str]) -> tuple[str | None, str | None]:
         for indice, texto in candidatos:
             nome = _cortar_em_titulo(texto).strip(" :-")
             if nome and comum.parece_nome(nome):
-                # janela maior que o default (3): o CNPJ vem depois do
-                # bloco de endereco/IE (varias linhas depois do nome).
-                return nome, comum.documento_fiscal_proximo(linhas, indice, janela=10)
+                cnpjs = _cnpjs_do_bloco_do_emitente(linhas, indice)
+                escolhido = None
+                if cnpj_chave:
+                    escolhido = next((c for c in cnpjs if re.sub(r"\D", "", c) == cnpj_chave), None)
+                if escolhido is None and cnpjs:
+                    escolhido = cnpjs[0]
+                return nome, f"CNPJ {escolhido}" if escolhido else None
     return None, None
+
+
+def _sem_acentos_maiusculo(texto: str) -> str:
+    sem_acento = "".join(c for c in unicodedata.normalize("NFKD", texto) if not unicodedata.combining(c))
+    return " ".join(sem_acento.upper().split())
+
+
+def _so_valores(texto: str) -> bool:
+    """True quando o texto tem apenas valores monetarios e espacos."""
+    return not comum.VALOR_NUM_RE.sub(" ", texto).strip()
+
+
+def extrair_totais_grade(linhas: list[str]) -> dict[str, float]:
+    """Le a grade de totais da DANFE casando cada rotulo com o valor de
+    MESMA POSICAO (5º rotulo -> 5º valor), nunca "o numero mais proximo".
+
+    Uma linha so conta como linha de rotulos da grade se, tirando os rotulos
+    conhecidos, sobram apenas valores/espacos; e so e aceita se a quantidade
+    de valores (na mesma linha ou na linha seguinte) for IGUAL a de rotulos
+    -- senao nao adivinha (rotulo desconhecido na linha, valor faltando...)
+    e simplesmente nao devolve aqueles campos.
+
+    Chaves devolvidas: base_icms, valor_icms, base_icms_st, valor_icms_st,
+    valor_produtos, frete, seguro, desconto, outras_despesas, ipi, valor_nota."""
+    totais: dict[str, float] = {}
+    for i, linha in enumerate(linhas):
+        norm = _sem_acentos_maiusculo(linha)
+        rotulos = [_ROTULOS_GRADE_TOTAIS[m.group(0)] for m in _RE_ROTULO_GRADE.finditer(norm)]
+        if not rotulos:
+            continue
+        resto = _RE_ROTULO_GRADE.sub(" ", norm)
+        if not _so_valores(resto):
+            continue  # a linha tem texto que nao e rotulo da grade
+        valores = comum.VALOR_NUM_RE.findall(resto)
+        # Valores na linha SEGUINTE so valem pra uma linha de grade (2+ rotulos, onde
+        # a contagem N = N confirma o casamento). Com 1 rotulo so, o numero da
+        # proxima linha e ambiguo (pode ser o deste campo ou do proximo) -- nao chuta.
+        if not valores and len(rotulos) > 1 and i + 1 < len(linhas) and _so_valores(linhas[i + 1]):
+            valores = comum.VALOR_NUM_RE.findall(linhas[i + 1])
+        if len(valores) != len(rotulos):
+            continue
+        for chave, bruto in zip(rotulos, valores):
+            valor = comum.para_numero(comum.corrigir_confusao_ocr(bruto))
+            if isinstance(valor, float):
+                totais.setdefault(chave, valor)
+    return totais
+
+
+def totais_fecham(totais: dict[str, float]) -> bool | None:
+    """Confere a formula do total da nota (padrao da SEFAZ): produtos -
+    desconto + ICMS ST + frete + seguro + outras despesas + IPI. None quando
+    faltam produtos ou total da nota pra conferir."""
+    if "valor_produtos" not in totais or "valor_nota" not in totais:
+        return None
+    esperado = (
+        totais["valor_produtos"]
+        - totais.get("desconto", 0.0)
+        + totais.get("valor_icms_st", 0.0)
+        + totais.get("frete", 0.0)
+        + totais.get("seguro", 0.0)
+        + totais.get("outras_despesas", 0.0)
+        + totais.get("ipi", 0.0)
+    )
+    return abs(esperado - totais["valor_nota"]) <= _TOLERANCIA_SOMA
 
 
 class DanfeExtractor(ExtratorDocumento):
@@ -264,21 +393,11 @@ class DanfeExtractor(ExtratorDocumento):
         self._extrair_destinatario(contexto, resultado)
         self._conferir_numero_documento(resultado, partes_chave)
 
-        # "Valor Total da Nota" e o rotulo padronizado nacionalmente pro
-        # valor total do documento -- mais confiavel que o fallback
-        # generico (que exige "R$" na frente do valor, mas uma DANFE
-        # normalmente imprime so o numero, sem o simbolo). preferir_linha_
-        # anterior=True porque a grade de totais real imprime o valor
-        # ACIMA da legenda, nao abaixo (ver docstring de extrair_valor_rotulo).
-        valor_total_bruto = comum.extrair_valor_rotulo(
-            contexto.texto, ROTULOS_VALOR_TOTAL_NOTA, preferir_linha_anterior=True
-        )
-        if valor_total_bruto:
-            resultado.documento.valor_total = comum.para_numero(valor_total_bruto)
-            resultado.confiancas["valor_total"] = "alta"
+        totais = extrair_totais_grade(contexto.linhas)
+        self._extrair_valor_total(contexto, resultado, totais)
 
         if contexto.paginas_palavras:
-            self._extrair_tabela_itens(contexto, resultado)
+            self._extrair_tabela_itens(contexto, resultado, totais)
 
         # TODO: numero de serie, natureza da operacao, data de saida, IE
         # do emitente, e os campos de ICMS/frete como valores de
@@ -304,7 +423,8 @@ class DanfeExtractor(ExtratorDocumento):
         resultado.documento.emissor = None
         resultado.confiancas.pop("emissor", None)
 
-        nome, documento_fiscal = extrair_emissor(contexto.linhas)
+        cnpj_chave = partes_chave["cnpj"] if partes_chave else None
+        nome, documento_fiscal = extrair_emissor(contexto.linhas, cnpj_chave)
         if nome:
             resultado.documento.emissor = f"{nome} ({documento_fiscal})" if documento_fiscal else nome
             confianca = "media"
@@ -325,21 +445,52 @@ class DanfeExtractor(ExtratorDocumento):
             resultado.confiancas["emissor"] = "baixa"
 
     def _extrair_destinatario(self, contexto: ContextoExtracao, resultado: ResultadoExtracao) -> None:
-        """Destinatario (so o nome/razao social, sem CPF/CNPJ) a partir de
-        "NOME/RAZÃO SOCIAL" (ver `extrair_destinatario`). O do
-        GenericExtractor e descartado: buscava "Destinatário", que bate no
-        titulo da secao, e devolvia uma linha inteira de rotulos."""
+        """Destinatario no MESMO formato do emissor e do boleto, "NOME
+        (CPF 000...)"/"NOME (CNPJ ...)", a partir de "NOME/RAZÃO SOCIAL"
+        (ver `extrair_destinatario`). O do GenericExtractor e descartado:
+        buscava "Destinatário", que bate no titulo da secao, e devolvia uma
+        linha inteira de rotulos."""
         gerado_pelo_generico = resultado.documento.destinatario
         resultado.documento.destinatario = None
         resultado.confiancas.pop("destinatario", None)
 
-        nome, confianca = extrair_destinatario(contexto.linhas)
+        nome, documento_fiscal, confianca = extrair_destinatario(contexto.linhas)
         if nome:
-            resultado.documento.destinatario = nome
+            resultado.documento.destinatario = f"{nome} ({documento_fiscal})" if documento_fiscal else nome
             resultado.confiancas["destinatario"] = confianca
         elif gerado_pelo_generico and not _RE_ROTULO_BLOCO.search(gerado_pelo_generico):
             resultado.documento.destinatario = gerado_pelo_generico
             resultado.confiancas["destinatario"] = "baixa"
+
+    def _extrair_valor_total(
+        self, contexto: ContextoExtracao, resultado: ResultadoExtracao, totais: dict[str, float]
+    ) -> None:
+        """Total da nota pela POSICAO na grade de totais (ver
+        `extrair_totais_grade`). Confianca "alta" quando a formula do total
+        fecha (produtos - desconto + ST + frete + seguro + outras + IPI =
+        total da nota) ou nao ha como conferir; "media" + aviso quando a
+        grade foi lida mas nao fecha.
+
+        Sem a grade (outro layout), tenta "Valor Total da Nota <valor>" na
+        MESMA linha; e sem isso fica o fallback generico (que exige "R$")."""
+        nota = totais.get("valor_nota")
+        if nota is not None:
+            resultado.documento.valor_total = nota
+            if totais_fecham(totais) is False:
+                resultado.confiancas["valor_total"] = "media"
+                resultado.avisos.append(
+                    "Os valores da grade de totais nao fecham (produtos - desconto + ICMS ST + "
+                    "frete + seguro + outras despesas + IPI difere do total da nota) -- "
+                    "confira o valor total manualmente."
+                )
+            else:
+                resultado.confiancas["valor_total"] = "alta"
+            return
+
+        valor_total_bruto = comum.extrair_valor_rotulo(contexto.texto, ROTULOS_VALOR_TOTAL_NOTA)
+        if valor_total_bruto:
+            resultado.documento.valor_total = comum.para_numero(valor_total_bruto)
+            resultado.confiancas["valor_total"] = "alta"
 
     def _conferir_numero_documento(
         self, resultado: ResultadoExtracao, partes_chave: dict | None
@@ -361,7 +512,9 @@ class DanfeExtractor(ExtratorDocumento):
                 "chave de acesso -- confira manualmente."
             )
 
-    def _extrair_tabela_itens(self, contexto: ContextoExtracao, resultado: ResultadoExtracao) -> None:
+    def _extrair_tabela_itens(
+        self, contexto: ContextoExtracao, resultado: ResultadoExtracao, totais: dict[str, float]
+    ) -> None:
         tabela = montar_tabela_itens(contexto.paginas_palavras)
         if not tabela.itens:
             return
@@ -375,14 +528,13 @@ class DanfeExtractor(ExtratorDocumento):
             )
             resultado.confiancas["CFOP"] = "media"
 
-        valor_total_produtos_bruto = comum.extrair_valor_rotulo(
-            contexto.texto, ROTULOS_VALOR_TOTAL_PRODUTOS, preferir_linha_anterior=True
-        )
-        if valor_total_produtos_bruto is None or tabela.soma_valor_total is None:
-            return
-
-        valor_total_produtos = comum.para_numero(valor_total_produtos_bruto)
-        if not isinstance(valor_total_produtos, float):
+        # Valor Total dos Produtos: pela posicao na grade de totais; sem a
+        # grade, "rotulo <valor>" na mesma linha.
+        valor_total_produtos = totais.get("valor_produtos")
+        if valor_total_produtos is None:
+            bruto = comum.extrair_valor_rotulo(contexto.texto, ROTULOS_VALOR_TOTAL_PRODUTOS)
+            valor_total_produtos = comum.para_numero(bruto) if bruto else None
+        if not isinstance(valor_total_produtos, float) or tabela.soma_valor_total is None:
             return
 
         if abs(valor_total_produtos - tabela.soma_valor_total) > _TOLERANCIA_SOMA:

@@ -5,10 +5,14 @@ confiar nela: e um COMPOSTO de trechos reais, NAO as 84 linhas completas
 que o extrator recebe.
 - Vem da saida de /debug/extractor-input de uma DANFE real (anonimizada
   pelo usuario): linhas 00-02, 14-15, 38 (texto girado do canhoto), 39-41
-  (emitente), 51-52 (destinatario, com rotulos e valores COLADOS na mesma
-  linha), 75-76 (cabecalho da tabela e linha do produto).
-- Endereco/IE/CNPJ/chave e o bloco de totais vem de um trecho colado
-  ANTES, com a adjacencia entre os blocos ASSUMIDA (nao confirmada).
+  (emitente), 49-50 (IE + CNPJ do emitente), 51-52 (destinatario, com
+  rotulos e valores COLADOS na mesma linha), 53-56 (grade de totais: linha
+  de N rotulos, linha de N valores), 75-76 (cabecalho da tabela e produto).
+- Endereco e chave de acesso vem de um trecho colado ANTES. A adjacencia
+  entre os blocos e ASSUMIDA -- em particular, no PDF real o CNPJ fica 10
+  linhas depois do nome do emitente; aqui fica mais perto (o teste
+  test_cnpj_do_emissor_a_10_linhas_do_nome cobre a distancia real com
+  preenchimento SINTETICO).
 - Nao ha linha de numero da nota ("Nº ...") nem o resto das linhas.
 Quando o usuario fornecer as 84 linhas completas, esta fixture deve ser
 substituida por elas (ver CLAUDE.md, "Diagnosticando um PDF real").
@@ -30,7 +34,9 @@ from app.extractors.danfe import (
     DanfeExtractor,
     extrair_destinatario,
     extrair_emissor,
+    extrair_totais_grade,
     partes_da_chave,
+    totais_fecham,
 )
 from app.extractors.danfe_tabela import _eh_texto_vertical, montar_tabela_itens
 
@@ -90,13 +96,19 @@ def test_destinatario_com_rotulos_e_valores_colados_na_mesma_linha():
         "NOME/RAZÃO SOCIAL CNPJ/CPF DATA DA EMISSÃO FULANO DE TAL SILVA 000.000.000-00 "
         "15/4/2026 ENDEREÇO BAIRRO/DISTRITO CEP DATA DA ENTRADA/SAÍDA RUA EXEMPLO, nº 1 CENTRO 00000-000",
     ]
-    assert extrair_destinatario(linhas) == ("FULANO DE TAL SILVA", "alta")
+    assert extrair_destinatario(linhas) == ("FULANO DE TAL SILVA", "CPF 000.000.000-00", "alta")
 
 
 def test_destinatario_com_rotulo_e_valor_em_linhas_separadas():
     """SINTETICO: outro layout (rotulos numa linha, valores na seguinte)."""
     linhas = ["NOME/RAZÃO SOCIAL CNPJ/CPF DATA DA EMISSÃO", "FULANO DE TAL 000.000.000-00 15/4/2026"]
-    assert extrair_destinatario(linhas) == ("FULANO DE TAL", "alta")
+    assert extrair_destinatario(linhas) == ("FULANO DE TAL", "CPF 000.000.000-00", "alta")
+
+
+def test_destinatario_pessoa_juridica_devolve_cnpj():
+    """SINTETICO."""
+    linhas = ["NOME/RAZÃO SOCIAL CNPJ/CPF DATA DA EMISSÃO EMPRESA EXEMPLO LTDA 11.222.333/0001-81 15/4/2026"]
+    assert extrair_destinatario(linhas) == ("EMPRESA EXEMPLO LTDA", "CNPJ 11.222.333/0001-81", "alta")
 
 
 def test_destinatario_sem_cpf_e_media_e_nome_comecando_com_rotulo_curto_nao_e_cortado():
@@ -104,11 +116,11 @@ def test_destinatario_sem_cpf_e_media_e_nome_comecando_com_rotulo_curto_nao_e_co
     ("media"). "UFRJ ..." comeca com "UF" (um rotulo do bloco) mas nao
     pode ser tratado como rotulo -- limite de palavra."""
     linhas = ["NOME/RAZÃO SOCIAL CNPJ/CPF UFRJ COMERCIO LTDA"]
-    assert extrair_destinatario(linhas) == ("UFRJ COMERCIO LTDA", "media")
+    assert extrair_destinatario(linhas) == ("UFRJ COMERCIO LTDA", None, "media")
 
 
 def test_destinatario_so_com_rotulos_devolve_none():
-    assert extrair_destinatario(["NOME/RAZÃO SOCIAL CNPJ/CPF DATA DA EMISSÃO"]) == (None, "")
+    assert extrair_destinatario(["NOME/RAZÃO SOCIAL CNPJ/CPF DATA DA EMISSÃO"]) == (None, None, "")
 
 
 def test_partes_da_chave():
@@ -184,17 +196,17 @@ def test_danfe_completa():
     assert doc.emissor == "DELL COMPUTADORES DO BRASIL LTDA (CNPJ 72.381.189/0010-01)"
     assert resultado.confiancas.get("emissor") == "alta"
 
-    # destinatario: SO o nome (sem CPF nem rotulos), da mesma linha dos
-    # rotulos, entre o ultimo rotulo e o CPF.
-    assert doc.destinatario == "FULANO DE TAL SILVA"
+    # destinatario: mesmo formato do emissor ("NOME (CPF ...)"), da mesma
+    # linha dos rotulos, entre o ultimo rotulo e o CPF.
+    assert doc.destinatario == "FULANO DE TAL SILVA (CPF 000.000.000-00)"
     assert resultado.confiancas.get("destinatario") == "alta"
 
     # data_emissao normalizada pra dd/mm/aaaa (o documento imprime "15/4/2026").
     assert doc.data_emissao == "15/04/2026"
     assert resultado.confiancas.get("data_emissao") == "alta"
 
-    # valor_total: no documento real o valor vem ANTES do rotulo "VALOR
-    # TOTAL DA NOTA" (legenda por baixo da caixa), nao "rotulo: valor".
+    # valor_total: pela POSICAO na grade de totais (6º rotulo -> 6º valor da
+    # linha 56), e "alta" porque a formula do total fecha.
     assert doc.valor_total == 229.0
     assert resultado.confiancas.get("valor_total") == "alta"
 
@@ -215,11 +227,10 @@ def test_danfe_completa():
 
 
 def test_soma_divergente_gera_aviso():
-    # No documento real o valor vem na linha ANTES do rotulo (ver
-    # comentario de valor_total em test_danfe_completa) -- troca o valor
-    # que precede "VALOR TOTAL DOS PRODUTOS", nao o rotulo em si.
+    # "Valor Total dos Produtos" e o 5º valor da linha de valores da grade
+    # (229,00 41,22 0,00 0,00 215,03) -- troca so ele.
     texto = FIXTURE_TEXTO.read_text(encoding="utf-8").replace(
-        "215,03\nVALOR TOTAL DOS PRODUTOS", "999,99\nVALOR TOTAL DOS PRODUTOS"
+        "229,00 41,22 0,00 0,00 215,03", "229,00 41,22 0,00 0,00 999,99"
     )
     contexto = ContextoExtracao(
         texto=texto, linhas=texto.splitlines(), paginas_palavras=_carregar_paginas_palavras()
@@ -344,3 +355,169 @@ def test_linha_fim_depois_do_primeiro_item_continua_encerrando_a_tabela():
 
     assert len(tabela.itens) == 1
     assert diagnostico[0]["linhas"][-1]["decisao"].startswith("fim: sem CODIGO")
+
+
+# --- Grade de totais: rotulo -> valor de MESMA POSICAO ----------------------------
+
+LINHAS_GRADE_REAL = [
+    "BASE DE CÁLCULO DO ICMS VALOR DO ICMS BASE DE CÁLCULO ICMS ST VALOR DO ICMS SUBSTITUIÇÃO VALOR TOTAL DOS PRODUTOS",
+    "229,00 41,22 0,00 0,00 215,03",
+    "VALOR DO FRETE VALOR DO SEGURO DESCONTO OUTRAS DESPESAS ACESSÓRIAS VALOR TOTAL DO I.P.I. VALOR TOTAL DA NOTA",
+    "0,00 0,00 0,00 0,00 13,97 229,00",
+]
+
+
+def test_totais_da_grade_casados_por_posicao():
+    """Linhas reais 53-56. Antes, o valor era "o numero mais proximo do
+    rotulo": produtos saia 229,00 (a base do ICMS, 1º valor da linha) em vez
+    de 215,03, e o total da nota so estava certo por coincidencia (nota =
+    produtos + IPI = 215,03 + 13,97 = 229,00 = base do ICMS)."""
+    totais = extrair_totais_grade(LINHAS_GRADE_REAL)
+
+    assert totais["valor_produtos"] == 215.03
+    assert totais["ipi"] == 13.97
+    assert totais["valor_nota"] == 229.0
+    assert totais["base_icms"] == 229.0
+    assert totais["valor_icms"] == 41.22
+    assert totais["base_icms_st"] == 0.0
+    assert totais["valor_icms_st"] == 0.0
+    assert totais["frete"] == 0.0
+    assert totais["seguro"] == 0.0
+    assert totais["desconto"] == 0.0
+    assert totais["outras_despesas"] == 0.0
+    assert totais_fecham(totais) is True
+
+
+def test_valor_total_segue_a_posicao_e_nao_o_numero_mais_proximo():
+    """Prova de que e posicional: muda so o 6º valor da 2ª linha. Se o
+    extrator ainda pegasse o "vizinho" (229,00 da linha de cima), o
+    total continuaria 229,00."""
+    texto = FIXTURE_TEXTO.read_text(encoding="utf-8").replace(
+        "0,00 0,00 0,00 0,00 13,97 229,00", "0,00 0,00 0,00 0,00 13,97 300,00"
+    )
+    resultado = _resultado_com_linhas(texto)
+
+    assert resultado.documento.valor_total == 300.0
+    # A formula nao fecha (215,03 + 13,97 != 300,00): confianca cai e avisa.
+    assert resultado.confiancas["valor_total"] == "media"
+    assert any("nao fecham" in aviso for aviso in resultado.avisos)
+
+
+def test_grade_com_quantidade_de_valores_diferente_nao_chuta():
+    """SINTETICO: 5 rotulos e 4 valores -- nao adivinha qual faltou."""
+    linhas = [
+        "BASE DE CÁLCULO DO ICMS VALOR DO ICMS BASE DE CÁLCULO ICMS ST VALOR DO ICMS SUBSTITUIÇÃO VALOR TOTAL DOS PRODUTOS",
+        "229,00 41,22 0,00 215,03",
+    ]
+    assert extrair_totais_grade(linhas) == {}
+
+
+def test_grade_com_rotulo_desconhecido_na_linha_nao_e_lida():
+    """SINTETICO: um rotulo que a gente nao conhece (ex: imposto de
+    importacao) muda a contagem/posicao -- a linha inteira e ignorada em vez
+    de deslocar os valores."""
+    linhas = [
+        "VALOR DO FRETE VALOR DO IMPOSTO DE IMPORTAÇÃO VALOR TOTAL DA NOTA",
+        "0,00 5,00 229,00",
+    ]
+    assert extrair_totais_grade(linhas) == {}
+
+
+def test_valores_e_rotulos_na_mesma_linha():
+    """SINTETICO: quando o pdfplumber cola rotulos e valores numa linha so
+    (como no bloco do destinatario), a ordem e a mesma."""
+    linhas = ["VALOR DO FRETE VALOR TOTAL DA NOTA 3,50 229,00"]
+    assert extrair_totais_grade(linhas) == {"frete": 3.5, "valor_nota": 229.0}
+
+
+def test_valor_total_na_mesma_linha_do_rotulo_quando_nao_ha_grade():
+    """SINTETICO: outro layout ("Valor Total da Nota 229,00") continua
+    funcionando pelo fallback da mesma linha."""
+    resultado = _resultado_com_linhas("DANFE\nValor Total da Nota 229,00\n")
+    assert resultado.documento.valor_total == 229.0
+    assert resultado.confiancas["valor_total"] == "alta"
+
+
+# --- CNPJ do emissor ------------------------------------------------------------------
+
+def _linhas_emitente_com_preenchimento(n_preenchimento: int, cnpj: str = "72.381.189/0010-01") -> list[str]:
+    return (
+        ["Identificação do emitente DANFE", "DELL COMPUTADORES DO BRASIL LTDA Documento Auxiliar da"]
+        + ["Nota Fiscal Eletrônica"]
+        + ["linha de endereco/IE"] * n_preenchimento
+        + ["INSCRIÇÃO ESTADUAL INSCR. ESTADUAL DO SUBST. TRIBUT. CNPJ", f"748241245113 {cnpj}"]
+        + ["NOME/RAZÃO SOCIAL CNPJ/CPF DATA DA EMISSÃO FULANO DE TAL SILVA 000.000.000-00 15/4/2026"]
+    )
+
+
+def test_cnpj_do_emissor_a_10_linhas_do_nome():
+    """Bug real: no PDF real o nome esta na linha 40 e o CNPJ na 50. A janela
+    fixa de 10 linhas (`documento_fiscal_proximo`) cobria 40..49 e perdia
+    o CNPJ por UMA linha -- emissor saia sem CNPJ e com confianca "media".
+    (Preenchimento SINTETICO: so a distancia e real.)"""
+    linhas = _linhas_emitente_com_preenchimento(7)
+    assert linhas.index("748241245113 72.381.189/0010-01") - 1 == 10  # nome -> CNPJ = 10 linhas
+    assert extrair_emissor(linhas) == ("DELL COMPUTADORES DO BRASIL LTDA", "CNPJ 72.381.189/0010-01")
+
+
+def test_cnpj_do_emissor_bem_longe_do_nome_tambem_e_achado():
+    linhas = _linhas_emitente_com_preenchimento(25)
+    assert extrair_emissor(linhas)[1] == "CNPJ 72.381.189/0010-01"
+
+
+def test_cnpj_do_destinatario_nao_e_tomado_pelo_do_emissor():
+    """SINTETICO: o bloco do emitente termina no rotulo do destinatario. Sem
+    CNPJ no bloco do emitente, o CNPJ que vem depois de NOME/RAZÃO SOCIAL
+    (outra entidade) nao pode virar o do emissor."""
+    linhas = [
+        "Identificação do emitente DANFE",
+        "DELL COMPUTADORES DO BRASIL LTDA Documento Auxiliar da",
+        "NOME/RAZÃO SOCIAL CNPJ/CPF EMPRESA CLIENTE LTDA 11.222.333/0001-81 15/4/2026",
+    ]
+    assert extrair_emissor(linhas) == ("DELL COMPUTADORES DO BRASIL LTDA", None)
+
+
+def test_com_dois_cnpjs_no_bloco_prefere_o_que_bate_com_a_chave():
+    """SINTETICO: ex. CNPJ de uma filial/substituto tributario no bloco."""
+    linhas = [
+        "Identificação do emitente DANFE",
+        "DELL COMPUTADORES DO BRASIL LTDA Documento Auxiliar da",
+        "CNPJ SUBSTITUTO 99.888.777/0001-66",
+        "748241245113 72.381.189/0010-01",
+    ]
+    assert extrair_emissor(linhas)[1] == "CNPJ 99.888.777/0001-66"  # sem chave: o primeiro
+    assert extrair_emissor(linhas, cnpj_chave="72381189001001")[1] == "CNPJ 72.381.189/0010-01"
+
+
+def test_emissor_no_pdf_real_tem_cnpj_conferido_e_confianca_alta():
+    """Fim a fim com a distancia real (nome -> CNPJ = 10 linhas) e uma chave
+    valida: o emissor sai "NOME (CNPJ ...)" e "alta"."""
+    chave = "3526 0472 3811 8900 1001 5500 1000 0123 4511 2345 6786"
+    linhas = _linhas_emitente_com_preenchimento(6) + [chave]
+    resultado = _resultado_com_linhas("\n".join(linhas))
+
+    assert resultado.documento.emissor == "DELL COMPUTADORES DO BRASIL LTDA (CNPJ 72.381.189/0010-01)"
+    assert resultado.confiancas["emissor"] == "alta"
+
+
+def test_rotulo_sozinho_na_linha_nao_pega_o_numero_da_linha_seguinte():
+    """SINTETICO: com UM rotulo por linha o numero da linha seguinte e
+    ambiguo (valor deste campo ou do proximo). Um layout "valor, legenda,
+    valor, legenda..." fazia "VALOR TOTAL DOS PRODUTOS" ler o 0,00 do campo
+    seguinte -- e gerava um aviso falso de soma. Nao chuta."""
+    linhas = [
+        "215,03",
+        "VALOR TOTAL DOS PRODUTOS",
+        "0,00",
+        "VALOR DO FRETE",
+    ]
+    assert extrair_totais_grade(linhas) == {}
+
+
+def test_danfe_nao_usa_a_linha_seguinte_pra_valores_de_rotulo():
+    """A DANFE nao liga `aceitar_linha_seguinte`: com a leitura por
+    posicao na grade, o resultado nao depende de "o numero da linha ao
+    lado". (Garante que o ajuste do boleto nao vazou pra ca.)"""
+    resultado = DanfeExtractor().extrair(_contexto())
+    assert resultado.documento.valor_total == 229.0
+    assert resultado.avisos == []

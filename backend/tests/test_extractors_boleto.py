@@ -88,3 +88,42 @@ def test_numero_documento_curto_sem_rotulo_e_rejeitado():
     texto = "BANCO EXEMPLO S.A.\nAceite N  02  Especie Doc DM\nCedente: Empresa ABC Ltda"
     doc = _extrair(texto).documento
     assert doc.numero_documento != "02"
+
+
+def _extrair_fixture():
+    texto = FIXTURE.read_text(encoding="utf-8")
+    contexto = ContextoExtracao(texto=texto, linhas=texto.splitlines(), paginas_palavras=None)
+    return BoletoExtractor().extrair(contexto)
+
+
+def test_boleto_traz_os_7_campos_adicionais():
+    """Trava os 7 campos_adicionais do boleto real, com valores, ordem e
+    confianca. Regressao real: "Valor do Documento" sumiu quando
+    `comum.extrair_valor_rotulo` foi "restaurado" pra so a mesma linha -- o
+    boleto real tem o rotulo numa linha ("Valor Documento (-) desconto ...")
+    e o valor na SEGUINTE ("1.000,00"), e so saia gracas a um fallback que
+    eu tinha adicionado pra DANFE. Nenhum teste travava esse campo, entao a
+    suite passou com o boleto quebrado (o codigo original, pre-refatoracao,
+    tambem nao o extraia desse texto)."""
+    resultado = _extrair_fixture()
+
+    campos = [(c.campo, c.valor) for c in resultado.documento.campos_adicionais]
+    assert campos == [
+        ("Linha digitável", "11111.11111 11111.111111 11111.111111 1 11111111111111"),
+        ("Nosso Número", "10200000001-9"),
+        ("Valor do Documento", "1.000,00"),
+        ("Desconto", "100,00"),
+        ("Valor a Pagar", "900,00"),
+        ("Parcela", "2/5"),
+        ("Agência/Código Beneficiário", "0000-0/0000000"),
+    ]
+    for campo, _ in campos:
+        assert resultado.confiancas[campo] == "alta", campo
+
+
+def test_valor_do_documento_no_boleto_vem_da_linha_seguinte_ao_rotulo():
+    """Fixa o motivo: o valor esta na linha depois do rotulo."""
+    linhas = FIXTURE.read_text(encoding="utf-8").splitlines()
+    i = next(i for i, linha in enumerate(linhas) if linha.startswith("Valor Documento"))
+    assert "1.000,00" not in linhas[i]
+    assert linhas[i + 1].strip() == "1.000,00"
