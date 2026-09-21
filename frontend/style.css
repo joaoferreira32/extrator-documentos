@@ -23,6 +23,13 @@
   --color-warning-bg: #fdf3e0;
   --color-warning-border: #f0dba8;
 
+  /* Confiança "alta". Verde distinto do accent (petróleo) pra não confundir com
+     a marca. Contraste do texto sobre o fundo: 5,8:1 (AA); warning 5,4:1 e
+     danger 5,7:1 já eram AA. */
+  --color-success: #1b6b3a;
+  --color-success-bg: #e6f4ea;
+  --color-success-border: #b7dcc3;
+
   /* ---------- Espaçamento: múltiplos de 4px ---------- */
   --space-1: 0.25rem; /* 4px */
   --space-2: 0.5rem; /* 8px */
@@ -395,17 +402,6 @@ body {
   color: var(--color-neutral-text);
 }
 
-.aviso {
-  margin: 0;
-  max-width: 46ch;
-  font-size: var(--text-sm);
-  color: var(--color-warning);
-  background: var(--color-warning-bg);
-  border: 1px solid var(--color-warning-border);
-  border-radius: var(--radius-md);
-  padding: var(--space-2) var(--space-3);
-}
-
 .section-title {
   font-size: var(--text-xs);
   font-weight: var(--font-bold);
@@ -425,7 +421,9 @@ body {
 .meta-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
-  gap: 0 var(--space-8);
+  /* espaço entre linhas: campos destacados têm caixa/borda própria e, sem isso,
+     ficavam colados uns nos outros */
+  gap: var(--space-2) var(--space-8);
   margin: 0;
 }
 
@@ -439,6 +437,11 @@ body {
 
 .meta-field dt {
   margin: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-2);
   font-size: var(--text-sm);
   font-weight: var(--font-medium);
   color: var(--color-text-muted);
@@ -545,6 +548,275 @@ td.empty-state {
   overflow-x: auto;
   font-size: var(--text-sm);
   color: var(--color-text-muted);
+}
+
+
+/* ---------- Confiança: chips, resumo, banner, edição ---------- */
+
+.icone {
+  display: inline-flex;
+  flex-shrink: 0;
+  width: 0.875rem;
+  height: 0.875rem;
+}
+
+.icone svg {
+  width: 100%;
+  height: 100%;
+}
+
+/* Chip: ícone (forma diferente por estado) + TEXTO + cor. Nunca só cor. */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 2px var(--space-2);
+  border: 1px solid transparent;
+  border-radius: var(--radius-pill);
+  font-size: var(--text-xs);
+  font-weight: var(--font-bold);
+  line-height: 1.4;
+  text-transform: none;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  cursor: help;
+}
+
+.chip-alta {
+  color: var(--color-success);
+  background: var(--color-success-bg);
+  border-color: var(--color-success-border);
+}
+
+.chip-media {
+  color: var(--color-warning);
+  background: var(--color-warning-bg);
+  border-color: var(--color-warning-border);
+}
+
+.chip-baixa {
+  color: var(--color-danger);
+  background: var(--color-danger-bg);
+  border-color: var(--color-danger-border);
+}
+
+.chip-vazio {
+  color: var(--color-neutral-text);
+  background: var(--color-neutral-bg);
+  border: 1px dashed var(--color-text-faint);
+}
+
+.chip-corrigido {
+  /* fundo branco: o campo corrigido já tem fundo accent-soft e o chip sumia nele */
+  color: var(--color-accent-dark);
+  background: var(--color-surface);
+  border-color: var(--color-accent);
+}
+
+.chip-slot {
+  display: inline-flex;
+  vertical-align: middle;
+  margin-left: var(--space-2);
+}
+
+/* Resumo geral */
+.resumo {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+  margin: 0;
+  font-size: var(--text-sm);
+  font-weight: var(--font-semibold);
+}
+
+.resumo-item {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.resumo-sep {
+  color: var(--color-text-faint);
+}
+
+.resumo-alta {
+  color: var(--color-success);
+}
+
+.resumo-revisar {
+  color: var(--color-warning);
+}
+
+.resumo-vazio {
+  color: var(--color-neutral-text);
+}
+
+.resumo-corrigido {
+  color: var(--color-accent-dark);
+}
+
+.nota,
+.legenda {
+  margin: 0;
+  max-width: 62ch;
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+  line-height: 1.5;
+}
+
+/* Banner de avisos: topo do resultado, largura total */
+.banner {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  margin-bottom: var(--space-6);
+  padding: var(--space-4);
+  color: var(--color-warning);
+  background: var(--color-warning-bg);
+  border: 1px solid var(--color-warning-border);
+  border-radius: var(--radius-md);
+}
+
+.banner-icon {
+  width: 1.25rem;
+  height: 1.25rem;
+  flex-shrink: 0;
+  margin-top: 0.1rem;
+}
+
+.banner-corpo {
+  min-width: 0;
+  font-size: var(--text-sm);
+}
+
+.banner-titulo {
+  margin: 0 0 var(--space-1);
+  font-weight: var(--font-bold);
+}
+
+.banner-corpo p,
+.banner-corpo ul {
+  margin: 0;
+}
+
+.banner-corpo ul {
+  padding-left: var(--space-5);
+}
+
+.banner-corpo li + li {
+  margin-top: var(--space-1);
+}
+
+/* Campo em revisão: baixa e vazio-obrigatório ganham destaque (além do chip) */
+.meta-field.is-baixa {
+  padding: var(--space-3);
+  background: var(--color-danger-bg);
+  border-bottom-color: var(--color-danger-border);
+  border-left: 3px solid var(--color-danger);
+  border-radius: var(--radius-sm);
+}
+
+.meta-field.is-vazio {
+  padding: var(--space-3);
+  background: var(--color-neutral-bg);
+  border: 1.5px dashed var(--color-text-faint);
+  border-radius: var(--radius-sm);
+}
+
+.meta-field.is-corrigido {
+  padding: var(--space-3);
+  background: var(--color-accent-soft);
+  border-bottom-color: var(--color-accent-soft);
+  border-radius: var(--radius-sm);
+}
+
+.meta-field dd {
+  min-width: 0;
+}
+
+/* Valor estático: clicável, com lápis */
+.valor-btn {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-2);
+  width: calc(100% + var(--space-4));
+  min-height: 2.25rem;
+  margin: 0 calc(var(--space-2) * -1);
+  padding: var(--space-1) var(--space-2);
+  font: inherit;
+  font-weight: var(--font-semibold);
+  color: inherit;
+  text-align: left;
+  word-break: break-word;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background-color var(--duration-fast) var(--ease-standard),
+    border-color var(--duration-fast) var(--ease-standard);
+}
+
+.valor-btn .icone {
+  margin-top: 0.2rem;
+  color: var(--color-text-faint);
+  transition: color var(--duration-fast) var(--ease-standard);
+}
+
+.valor-btn:hover {
+  background: var(--color-bg);
+  border-color: var(--color-border);
+}
+
+.valor-btn:hover .icone,
+.valor-btn:focus-visible .icone {
+  color: var(--color-accent);
+}
+
+.is-opcional-vazio .valor-texto {
+  color: var(--color-text-faint);
+  font-weight: var(--font-regular);
+}
+
+/* Editor (textarea auto-ajustável; select pro tipo) */
+.valor-editor {
+  display: block;
+  width: calc(100% + var(--space-4));
+  min-height: 2.25rem;
+  margin: 0 calc(var(--space-2) * -1);
+  padding: var(--space-1) var(--space-2);
+  font: inherit;
+  font-weight: var(--font-semibold);
+  line-height: 1.5;
+  color: var(--color-text);
+  background: var(--color-surface);
+  border: 1px solid var(--color-text-faint);
+  border-radius: var(--radius-sm);
+  resize: none;
+  overflow: hidden;
+}
+
+.is-baixa .valor-editor {
+  border-color: var(--color-danger);
+}
+
+.is-vazio .valor-editor {
+  border-style: dashed;
+}
+
+.dica {
+  margin: var(--space-1) 0 0;
+  font-size: var(--text-xs);
+  font-weight: var(--font-medium);
+}
+
+.is-baixa .dica {
+  color: var(--color-danger);
+}
+
+.is-vazio .dica {
+  color: var(--color-neutral-text);
 }
 
 /* ---------- Responsivo ---------- */

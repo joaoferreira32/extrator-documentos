@@ -67,6 +67,23 @@
       </section>
 
       <section class="card result-card" id="resultado" hidden aria-labelledby="resultado-heading">
+        <div class="banner" id="banner-avisos" role="status" hidden>
+          <svg class="banner-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path
+              d="M12 3.5L2.8 19.5h18.4L12 3.5z"
+              stroke="currentColor"
+              stroke-width="1.6"
+              stroke-linejoin="round"
+            />
+            <path d="M12 10v4.2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+            <circle cx="12" cy="16.8" r="0.9" fill="currentColor" />
+          </svg>
+          <div class="banner-corpo">
+            <p class="banner-titulo">Atenção</p>
+            <div id="banner-avisos-corpo"></div>
+          </div>
+        </div>
+
         <div class="result-header">
           <div class="result-header-info">
             <h2 id="resultado-heading" class="visually-hidden">Resultado da extração</h2>
@@ -74,7 +91,15 @@
               <span id="badge-modo" class="badge"></span>
               <span id="badge-origem" class="badge badge-neutral"></span>
             </div>
-            <p id="aviso" class="aviso" hidden></p>
+            <p id="resumo" class="resumo" aria-live="polite" aria-atomic="true" hidden></p>
+            <p id="nota-confianca" class="nota" hidden>
+              Confiança por campo indisponível no modo IA — confira os valores antes de exportar.
+            </p>
+            <p id="legenda-confianca" class="legenda" hidden>
+              Confiança: <strong>Alta</strong> — lida por rótulo ou conferida &middot;
+              <strong>Média</strong> — inferida pela posição &middot;
+              <strong>Baixa</strong> — confira. Qualquer campo pode ser corrigido.
+            </p>
           </div>
           <button type="button" class="btn btn-primary" id="btn-excel">
             <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -93,7 +118,10 @@
         <h3 class="section-title">Dados do documento</h3>
         <dl class="meta-grid" id="tabela-metadados"></dl>
 
-        <h3 class="section-title">Itens</h3>
+        <h3 class="section-title">
+          Itens
+          <span id="chip-itens" class="chip-slot"></span>
+        </h3>
         <div class="table-wrap">
           <table id="tabela-itens"></table>
         </div>
