@@ -21,3 +21,9 @@ Thumbs.db
 *.xlsx
 backend/pagina_teste_ocr.png
 backend/sample_escaneado_teste.pdf
+
+# PDFs: NUNCA versionar. Documentos reais (notas fiscais, boletos, ...)
+# tem dados pessoais de terceiros. Os testes geram PDFs em memoria; as
+# fixtures versionadas sao texto/JSON anonimizado (*_anonimizado.*).
+*.pdf
+*.PDF
