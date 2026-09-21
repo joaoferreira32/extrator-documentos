@@ -7,7 +7,7 @@ from fastapi.staticfiles import StaticFiles
 from app import basic_extractor, config, excel_exporter, extractors, llm_extractor, pdf_extractor
 from app.extractors.danfe import DanfeExtractor
 from app.extractors.danfe_tabela import montar_tabela_itens
-from app.schemas import ExtractionResult
+from app.schemas import ExportarExcelRequest, ExtractionResult
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 FRONTEND_DIR = BASE_DIR / "frontend"
@@ -230,12 +230,14 @@ async def debug_extractor_input(file: UploadFile):
 
 
 @app.post("/export-excel")
-async def export_excel(resultado: ExtractionResult):
-    buffer = excel_exporter.gerar_excel(resultado)
+async def export_excel(requisicao: ExportarExcelRequest):
+    """Uma lista de documentos (a tela envia 1; a estrutura ja comporta lote)."""
+    buffer = excel_exporter.gerar_excel(requisicao.documentos)
+    nome = "documento_extraido.xlsx" if len(requisicao.documentos) == 1 else "documentos_extraidos.xlsx"
     return StreamingResponse(
         buffer,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": 'attachment; filename="documento_extraido.xlsx"'},
+        headers={"Content-Disposition": f'attachment; filename="{nome}"'},
     )
 
 

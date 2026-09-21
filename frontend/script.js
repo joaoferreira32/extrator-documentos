@@ -23,6 +23,7 @@ const btnExtrairEl = document.getElementById("btn-extrair");
 
 let ultimoResultado = null; // o que o Excel exporta: recebe as correções do usuário
 let arquivoSelecionado = null;
+let arquivoDoResultado = null; // arquivo que gerou o resultado na tela (vai pra coluna Arquivo do Excel)
 let campos = []; // estado de cada campo do documento (ver construirCampos)
 let temConfiancas = false; // false no modo IA (confiancas vem vazio)
 
@@ -198,6 +199,7 @@ form.addEventListener("submit", async (event) => {
     }
 
     const resultado = await response.json();
+    arquivoDoResultado = arquivoSelecionado.name;
     mostrarResultado(resultado);
   } catch (erro) {
     mostrarErro(`Falha ao extrair: ${erro.message}`);
@@ -212,11 +214,21 @@ btnExcelEl.addEventListener("click", async () => {
 
   btnExcelEl.disabled = true;
   try {
-    // ultimoResultado já carrega as correções feitas na tela.
+    // ultimoResultado já carrega as correções feitas na tela; `corrigidos` diz
+    // QUAIS campos foram corrigidos (e o valor original) pra o Excel marcá-los.
+    // A requisição é uma LISTA de documentos: hoje 1, mas o backend já comporta lote.
     const response = await fetch("/export-excel", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(ultimoResultado),
+      body: JSON.stringify({
+        documentos: [
+          {
+            arquivo: arquivoDoResultado,
+            resultado: ultimoResultado,
+            corrigidos: coletarCorrigidos(),
+          },
+        ],
+      }),
     });
 
     if (!response.ok) {
@@ -655,6 +667,19 @@ function finalizarEdicao(campo, editor, devolverFoco) {
   if (devolverFoco) {
     campo.el.querySelector(".valor-btn, .valor-editor")?.focus();
   }
+}
+
+// Campos que o usuário mudou: { chave: valor ORIGINAL }. A chave é a mesma
+// usada em `confiancas` (atributo do documento ou texto do campo adicional),
+// que é como o backend cruza confiança e correção.
+function coletarCorrigidos() {
+  const corrigidos = {};
+  for (const campo of campos) {
+    if (foiEditado(campo)) {
+      corrigidos[campo.confChave ?? campo.chave] = campo.original;
+    }
+  }
+  return corrigidos;
 }
 
 // ---------- Resumo de confiança ----------
