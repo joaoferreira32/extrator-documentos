@@ -164,9 +164,9 @@ fixture real em `test_extractors_boleto.py`):
   linha de baixo, `"1.000,00"`. `comum.extrair_valor_rotulo` só lia a mesma
   linha, então esse campo não era extraído — o código ORIGINAL
   (pré-refatoração) também não o extraía desse texto (verificado rodando o
-  `basic_extractor` de `9d616bf` sobre a fixture: 6 campos, sem ele). Ele
+  `basic_extractor` de `432d42e` sobre a fixture: 6 campos, sem ele). Ele
   passou a sair (7 campos) por efeito colateral de um fallback bidirecional
-  que adicionei pra DANFE em 5e56783; ao **restaurar** a função "ao
+  que adicionei pra DANFE em 0e804e7; ao **restaurar** a função "ao
   original" o campo sumiu de novo, e **nenhum teste travava o campo**, então
   a suíte passou com o boleto "quebrado". Hoje: `extrair_valor_rotulo(...,
   aceitar_linha_seguinte=True)`, **opt-in** e só pro Valor do Documento
@@ -226,7 +226,7 @@ foram feitas em cima de um TRECHO colado à mão que o usuário disse ser o
 texto completo — não era. O PDF real começava com texto girado ("FOLHA
 1/", "e-FN", ...), e o bloco do destinatário saía com rótulos e valores
 colados numa linha só. Resultado: 33 testes passando e o PDF real falhando
-em emissor, destinatário e itens (commit 5e56783). A hipótese que eu tinha
+em emissor, destinatário e itens (commit 0e804e7). A hipótese que eu tinha
 posto aqui ("o nome do emitente vem antes de qualquer rótulo, no topo") era
 **falsa**. Regra que sai disso: não corrigir sem ter visto o texto exato
 (ver "Diagnosticando um PDF real").
