@@ -1,254 +1,213 @@
 # Extrator Inteligente de Documentos
 
-MVP de um extrator de documentos: você sobe um PDF (nota fiscal, pedido de
-compra ou relatório), o sistema extrai o texto, estrutura os dados em JSON,
-exibe numa tabela e permite baixar o resultado em Excel.
+Extrai automaticamente os dados de **notas fiscais (DANFE)** e **boletos bancários**
+em PDF — emissor, destinatário, valores, datas, itens — e gera uma planilha Excel
+pronta para conferência. Evita a digitação manual de documentos fiscais, com um
+indicador de confiança em cada campo extraído para o usuário saber o que revisar.
 
 ![Tela do extrator com resultado extraído](docs/screenshot.png)
 
+## Destaques
+
+- **Funciona sem IA:** extratores por tipo de documento (padrão Strategy) leem
+  campos por rótulo e reconstroem a tabela de itens da DANFE pela posição x/y das
+  palavras. A IA (Claude) é um upgrade opcional, com fallback automático.
+- **Na DANFE, a confiança é verificada, não chutada:** CNPJ do emissor e número da
+  nota são conferidos contra a chave de acesso (com dígito verificador); totais são
+  validados pela fórmula da nota.
+- **Correção antes de exportar:** qualquer campo pode ser editado na tela; o Excel
+  marca o que foi corrigido e guarda o valor original em comentário.
+- **Excel multi-aba com estrutura pronta para lote:** Resumo, Itens, Campos adicionais e Avisos,
+  com valores numéricos em R$, datas reais e chave de 44 dígitos preservada.
+- **Segurança e privacidade:** proteção contra injeção de fórmula no Excel;
+  nenhum dado pessoal real no repositório nem no histórico do Git.
+- **150 testes:** unitários, regressão sobre um boleto e uma DANFE reais anonimizados
+  e 25 testes de interface num navegador real (Playwright).
+- **OCR opcional** (Tesseract) para PDFs escaneados.
+
 ## Stack
 
-- **Backend:** Python 3, FastAPI
-- **Extração de PDF:** [pdfplumber](https://github.com/jsvine/pdfplumber) (texto digital) +
-  [PyMuPDF](https://pymupdf.readthedocs.io/) para renderizar páginas como
-  imagem quando é preciso OCR
-- **OCR (opcional):** [Tesseract](https://github.com/tesseract-ocr/tesseract)
-  via `pytesseract`, pacote de idioma português — ver "Instalando o
-  Tesseract" abaixo
-- **Exportação para Excel:** openpyxl (4 abas formatadas; ver CLAUDE.md, "Excel")
-- **Estruturação dos dados:** ver "Modo básico vs modo IA" abaixo
-- **Frontend:** HTML/CSS/JS puro, sem framework, servido pelo próprio FastAPI
+Python · FastAPI · pdfplumber · PyMuPDF · Tesseract · openpyxl · Claude API (opcional) · HTML/CSS/JS puro · Playwright
 
-## Modo básico vs modo IA
+## Como funciona
 
-A IA é um **upgrade opcional**, não um requisito para o sistema funcionar:
+O PDF passa por três etapas: **texto → campos → planilha**.
 
-- **Modo básico** (padrão, sem nenhuma configuração): `pdfplumber` extrai o
-  texto (e, quando digital, a posição x/y de cada palavra) do PDF, e um
-  extrator dedicado por tipo de documento (padrão Strategy, em
-  `app/extractors/`) captura os campos por **rótulo** conhecido
-  (`Beneficiário:`, `Sacado:`, `Cedente:`, `Nosso Número:`, `Vencimento:`,
-  etc.) em vez de regex solto pelo texto inteiro — isso é o que evita
-  pegar pedaços soltos de outros números. Reconhece boleto bancário, DANFE
-  (`DANFE`/`NF-e`/`CFOP`/chave de acesso) e pedido de compra por
-  palavra-chave, identifica CNPJ/CPF por formato e associa ao
-  emissor/destinatário quando aparecem perto do nome, e para boletos
-  também captura linha digitável e vencimento. Pra DANFE, `itens` é
-  reconstruído por **posição** (x0/x1/top/bottom de cada palavra, não
-  regex sobre texto corrido) — a única forma confiável de recuperar uma
-  tabela a partir de PDF sem estrutura de tabela nativa; boleto e
-  documentos genéricos deixam `itens` vazio, já que não têm uma tabela de
-  itens no mesmo sentido. Cada campo carrega uma confiança
-  (`"alta"`/`"media"`/`"baixa"`) exposta no campo `confiancas` da
-  resposta da API.
-- **Modo IA** (com `ANTHROPIC_API_KEY` configurada): usa a API da Anthropic
-  (Claude) via [Structured Outputs](https://docs.claude.com/) para extrair
-  os mesmos campos com muito mais precisão, incluindo a lista de itens. Se a
-  chamada à IA falhar por qualquer motivo, o sistema cai automaticamente
-  para o modo básico em vez de mostrar um erro.
+1. **Texto.** O `pdfplumber` lê o texto digital do PDF (e a posição x/y de cada
+   palavra). Se o PDF for uma imagem escaneada, cai para [OCR](#ocr-opcional).
+2. **Campos.** O extrator do tipo de documento estrutura o texto em JSON
+   (`DocumentoExtraido`). Há dois modos, que preenchem o mesmo formato — por isso
+   tela e Excel funcionam igual nos dois.
+3. **Planilha.** A tela mostra o resultado, deixa corrigir e baixa o `.xlsx`.
 
-Os dois modos preenchem o mesmo formato de dados (`DocumentoExtraido`), que
-é o que permite a tabela e a exportação Excel funcionarem igual
-independente de como o documento foi processado. A resposta da API sempre
-inclui um campo `modo_extracao` (`"basico"` ou `"ia"`), exibido como um
-badge na interface.
+### Modo básico (padrão, sem configuração)
 
-### Confiança e correção na interface
+- Escolhe o extrator pelo tipo do documento: **DANFE**, **boleto** ou **genérico**
+  (pedido de compra, relatório).
+- Captura os campos por **rótulo** conhecido (`Beneficiário`, `Sacado`, `Vencimento`…),
+  não por regex solto no texto todo — isso evita roubar pedaços de outros números.
+- Identifica CNPJ/CPF pelo formato e associa ao emissor/destinatário.
+- Boleto: também linha digitável, nosso número e vencimento.
+- DANFE: valida a chave de acesso e reconstrói a tabela de itens pela **posição**
+  das palavras (regex sobre texto corrido perde a estrutura de colunas).
+- Cada campo carrega uma confiança (`alta`, `media` ou `baixa`) no campo
+  `confiancas` da resposta da API.
 
-Cada campo mostra um indicador de confiança (**Alta**, **Média**, **Baixa**;
-sempre com ícone e texto, nunca só cor), há um resumo no topo ("X de Y campos
-com alta confiança") e um banner com os avisos da extração. **Qualquer campo
-pode ser corrigido antes de exportar** — campos de confiança baixa ou
-obrigatórios vazios já vêm abertos para edição — e a correção sai no Excel.
-Detalhes (campos obrigatórios por tipo de documento, regras do resumo, o que é
-só exibição) em `CLAUDE.md`, seção "Interface: confiança e edição".
+### Modo IA (opcional)
+
+Com `ANTHROPIC_API_KEY` configurada, o Claude extrai os mesmos campos (inclusive a
+lista de itens) via Structured Outputs. Se a chamada falhar
+por qualquer motivo, o sistema volta sozinho ao modo básico e avisa na tela.
+A resposta sempre traz `modo_extracao` (`"basico"` ou `"ia"`), exibido como badge.
+
+### Confiança e correção na tela
+
+Cada campo mostra **Alta**, **Média** ou **Baixa** (sempre com ícone e texto, nunca só
+cor), há um resumo no topo ("X de Y campos com alta confiança") e um banner com os
+avisos da extração. Campos de confiança baixa ou obrigatórios vazios já vêm abertos
+para edição; **qualquer campo pode ser corrigido** antes de exportar. No modo IA não
+há indicador de confiança por campo, mas a edição funciona igual.
 
 ### Excel
 
-O botão **Baixar Excel** gera um `.xlsx` com 4 abas — **Resumo** (uma linha por
-documento), **Itens**, **Campos adicionais** e **Avisos** —, todas com cabeçalho
-congelado, filtro, largura ajustada e uma coluna `ID` que liga as abas. Valores
-monetários saem como número (`R$ 1.234,56`), datas como data de verdade, e
-campos de confiança média/baixa ou corrigidos por você ficam destacados (com
-comentário). A estrutura já comporta vários documentos num arquivo só. Detalhes
-em `CLAUDE.md`, seção "Excel".
+O botão **Baixar Excel** gera um `.xlsx` com 4 abas, sempre presentes:
 
-## Origem do texto: digital vs OCR
+| Aba | Conteúdo |
+|---|---|
+| **Resumo** | uma linha por documento (tipo, número, datas, emissor e destinatário com CNPJ/CPF em colunas próprias, valor total, confiança geral) |
+| **Itens** | descrição, quantidade, valor unitário e total |
+| **Campos adicionais** | chave de acesso, CFOP, nosso número, linha digitável… com a confiança de cada um |
+| **Avisos** | o que a extração pediu para conferir |
 
-Antes de qualquer extração de campos, o sistema decide de onde vem o
-texto:
+Todas têm cabeçalho congelado, filtro, largura ajustada e uma coluna `ID` que liga as
+abas. Confiança média/baixa e campos corrigidos ficam destacados, com comentário.
+A estrutura (lista de documentos, `ID`) já comporta vários documentos no mesmo arquivo.
 
-1. `pdfplumber` tenta extrair o texto digital do PDF (a camada de texto
-   real, quando o PDF não é uma imagem escaneada).
-2. Se esse texto vier vazio ou curto demais para ser confiável (menos de
-   20 caracteres — o suficiente pra ignorar um carimbo solto), o sistema
-   tenta **OCR** automaticamente: renderiza cada página como imagem
-   (PyMuPDF) e roda o Tesseract em cima.
-3. O texto que sobrar — digital ou vindo do OCR — segue para o **mesmo**
-   `basic_extractor.py`/modo IA de sempre. Não existe um caminho de
-   extração separado para texto de OCR.
+## Como rodar (Windows / PowerShell)
 
-A resposta da API inclui `origem_texto` (`"digital"` ou `"ocr"`), exibido
-como um segundo badge ao lado do badge de modo, pra você saber como o
-documento foi lido.
+Requer Python 3.
 
-**OCR é opcional e nunca quebra o app.** Se o Tesseract não estiver
-instalado no sistema, o PDF escaneado continua retornando um aviso claro
-("OCR não está disponível") em vez de erro. Texto vindo de OCR tende a
-confundir letras com números parecidos (`O`/`0`, `I`/`1`, `S`/`5`) — o
-modo básico corrige isso nos campos que já sabe que devem ser numéricos
-(CNPJ, CPF, valores) antes de usar o valor.
-
-## Como rodar localmente
-
-```bash
+```powershell
 cd backend
 python -m venv .venv
-.venv\Scripts\activate      # Windows
-pip install -r requirements.txt
-uvicorn app.main:app --reload
+.venv\Scripts\python.exe -m pip install -r requirements.txt
+.venv\Scripts\python.exe -m uvicorn app.main:app --reload
 ```
 
-Acesse `http://localhost:8000`.
+Acesse `http://localhost:8000` (interface) ou `http://localhost:8000/docs` (Swagger).
 
-### Habilitando o modo IA (opcional)
+Essa forma funciona **sem ativar o venv**. Se preferir ativá-lo
+(`.venv\Scripts\Activate.ps1`; o PowerShell pode bloquear scripts por política de
+execução), depois basta `uvicorn app.main:app --reload`.
 
-1. Copie `backend/.env.example` para `backend/.env`
-2. Preencha `ANTHROPIC_API_KEY=` com sua chave da Anthropic
-3. Reinicie o servidor
+**Modo IA (opcional):** copie `backend\.env.example` para `backend\.env`, preencha
+`ANTHROPIC_API_KEY=` com sua chave e reinicie o servidor. Sem a chave, tudo continua
+funcionando em modo básico.
 
-Sem a chave configurada, o sistema continua funcionando normalmente em modo
-básico.
+### Testes
 
-### Instalando o Tesseract (OCR, opcional — Windows)
-
-O OCR precisa do **Tesseract instalado no sistema** (não é um pacote
-Python — `pytesseract` só chama o binário). Sem ele, o app continua
-funcionando normalmente; PDFs escaneados só não vão ter o texto extraído.
-
-1. Instale via [winget](https://learn.microsoft.com/pt-br/windows/package-manager/winget/):
-
-   ```powershell
-   winget install --id UB-Mannheim.TesseractOCR -e
-   ```
-
-   ou baixe o instalador em
-   [github.com/UB-Mannheim/tesseract](https://github.com/UB-Mannheim/tesseract/wiki).
-
-2. **O instalador não adiciona o Tesseract ao PATH automaticamente**, e a
-   instalação via `winget` (silenciosa) só traz o idioma inglês por
-   padrão — o pacote de português (`por.traineddata`) não vem incluído.
-   Duas pegadinhas reais encontradas testando isso:
-
-   - **Binário fora do PATH:** o app já lida com isso sozinho — se
-     `tesseract` não estiver no PATH, `pdf_extractor.py` tenta o caminho
-     padrão do instalador (`C:\Program Files\Tesseract-OCR\tesseract.exe`)
-     antes de desistir. Se você instalou em outro lugar, adicione a pasta
-     ao PATH manualmente.
-   - **Pacote de português ausente:** baixe `por.traineddata` em
-     [github.com/tesseract-ocr/tessdata_fast](https://github.com/tesseract-ocr/tessdata_fast/raw/main/por.traineddata)
-     e copie para `C:\Program Files\Tesseract-OCR\tessdata\` (precisa de
-     um terminal **como Administrador** para copiar em `Program Files`).
-     Alternativa sem precisar de admin: coloque o arquivo em qualquer
-     pasta e defina a variável de ambiente `TESSDATA_PREFIX` apontando
-     para essa pasta antes de rodar o servidor.
-
-3. Confirme que funcionou:
-
-   ```powershell
-   & "C:\Program Files\Tesseract-OCR\tesseract.exe" --list-langs
-   ```
-
-   Deve listar `por` na saída.
-
-### Rodando os testes
-
-```bash
+```powershell
 cd backend
-pytest tests/ -v -s
+.venv\Scripts\python.exe -m pytest tests -v
 ```
 
-Inclui um teste de regressão sobre o texto bruto de um boleto bancário real
-(dados pessoais trocados por fictícios) — existe porque cenários sintéticos
-escritos à mão não reproduziam bugs que só apareciam no documento de
-verdade. Os testes de OCR usam mocks pra validar a orquestração
-digital→OCR sem depender do Tesseract estar instalado; há um teste "de
-verdade" com OCR real que roda quando o Tesseract e o idioma português
-estão disponíveis, e é pulado (não falha) quando não estão.
+- **125 testes** rodam por padrão: unitários e regressão sobre o texto bruto de um
+  boleto e de trechos de uma DANFE reais, com dados pessoais trocados por fictícios.
+  Essas fixtures existem porque cenários escritos à mão não reproduziam os bugs que só
+  apareciam no documento de verdade.
+- O teste de OCR real só roda com o Tesseract e o idioma português instalados; sem
+  eles é pulado (não falha). Os demais testes de OCR usam mocks.
+- **25 testes de interface** (Chromium real via Playwright, com PDFs fictícios
+  gerados na hora) são opt-in e usam dependências separadas:
 
-Os testes de interface (Chromium real via Playwright, 25 testes, com PDFs
-fictícios gerados na hora) são opt-in e usam dependências separadas:
-
-```bash
-cd backend
-pip install -r requirements-dev.txt
-playwright install chromium
-pytest tests/e2e --e2e -v
+```powershell
+.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+.venv\Scripts\python.exe -m playwright install chromium
+.venv\Scripts\python.exe -m pytest tests\e2e --e2e -v
 ```
+
+## OCR (opcional)
+
+O sistema sempre tenta o **texto digital** primeiro. Só aciona OCR quando esse texto vem
+vazio ou com menos de 20 caracteres (o suficiente para ignorar um carimbo solto): cada
+página vira imagem (PyMuPDF) e o Tesseract lê o resultado. O texto do OCR segue pelo
+**mesmo** extrator de sempre — não existe um caminho de extração separado. A resposta
+traz `origem_texto` (`"digital"` ou `"ocr"`), exibido como badge.
+
+- **Nunca quebra o app.** Sem o Tesseract, um PDF escaneado devolve um aviso claro
+  ("OCR não está disponível"), não um erro.
+- **PyMuPDF em vez de Poppler/ImageMagick** para renderizar as páginas: instala só com
+  `pip`, então o OCR precisa de uma dependência externa (o Tesseract), não duas.
+- **Confusão de caracteres** (`O`/`0`, `I`/`1`, `S`/`5`) é corrigida só nos campos que
+  já são numéricos (CNPJ, CPF, valores). Aplicar a correção no texto todo destruiria
+  palavras normais.
+- **Limites:** a tabela de itens da DANFE precisa de texto digital (via OCR `itens`
+  fica vazio), e a correção de confusão não cobre número do documento nem texto livre.
+
+### Instalando o Tesseract (Windows)
+
+O Tesseract é um programa do sistema, não um pacote Python.
+
+```powershell
+winget install --id UB-Mannheim.TesseractOCR -e
+```
+
+(ou baixe o instalador em [github.com/UB-Mannheim/tesseract](https://github.com/UB-Mannheim/tesseract/wiki)).
+Duas pegadinhas reais:
+
+- **Fora do PATH:** o instalador não adiciona o Tesseract ao PATH. O app já lida com
+  isso — tenta `C:\Program Files\Tesseract-OCR\tesseract.exe` antes de desistir. Se você
+  instalou em outro lugar, adicione a pasta ao PATH.
+- **Sem o idioma português:** a instalação via `winget` só traz o inglês. Baixe
+  [`por.traineddata`](https://github.com/tesseract-ocr/tessdata_fast/raw/main/por.traineddata)
+  e copie para `C:\Program Files\Tesseract-OCR\tessdata\` (terminal como Administrador).
+  Sem admin: coloque o arquivo em qualquer pasta e aponte `TESSDATA_PREFIX` para ela.
+
+Confira com `& "C:\Program Files\Tesseract-OCR\tesseract.exe" --list-langs` — a saída
+deve listar `por`.
 
 ## Decisões técnicas
 
-- **`client.messages.parse(output_format=...)`** (Anthropic Structured
-  Outputs) em vez de "pedir JSON no prompt e fazer parsing manual" — a
-  resposta já vem validada contra o schema Pydantic, então não existe o
-  risco clássico de a LLM devolver um JSON malformado ou incompleto.
-- **Campos numéricos flexíveis** (`float | string`): `quantidade`,
-  `valor_unitario` e `valor_total` viram `float` quando a conversão é
-  confiável, e caem para `string` quando não é — isso é o que faz a
-  planilha Excel sair com números realmente somáveis, sem quebrar a
-  extração quando algum valor vem em formato inesperado.
-- **Extração por rótulo, não regex solto pelo texto todo:** o modo básico
-  procura primeiro um rótulo conhecido e usa o texto logo depois dele. É
-  mais confiável do que casar um padrão em qualquer lugar do documento
-  (que tende a "roubar" pedaços de outros números, como linha digitável ou
-  CNPJ) e permite associar CNPJ/CPF ao nome da entidade mais próxima.
-- **PDF escaneado (sem texto extraível):** detectado antes de tentar
-  qualquer extração; o sistema tenta OCR (Tesseract) automaticamente e,
-  se não estiver disponível ou não conseguir ler nada, retorna um aviso
-  claro em vez de um resultado vazio sem explicação. OCR é uma
-  dependência de sistema externa (não um pacote Python) — por isso tem
-  que degradar sem quebrar o app.
-- **PyMuPDF em vez de Poppler/ImageMagick para rasterizar páginas:**
-  `pdf2image` (Poppler) e o modo de imagem do próprio pdfplumber
-  (ImageMagick/Wand) exigiriam mais um binário de sistema além do
-  Tesseract. PyMuPDF renderiza página→imagem só com `pip install`, então
-  OCR precisa de exatamente uma dependência externa, não duas.
-- **Correção de confusão de OCR só em campos já identificados como
-  numéricos** (CNPJ, CPF, valores): a regex desses campos aceita `O/o`,
-  `I/i`, `S/s` no lugar de dígitos e corrige antes de usar. Aplicar essa
-  correção no texto inteiro destruiria palavras normais — por isso é
-  escopada aos campos que a regex já confirmou que deveriam ser números.
-- **Frontend servido pelo próprio FastAPI** (`StaticFiles`, um único
-  processo em `localhost:8000`) em vez de dois servidores separados —
-  evita configurar CORS e simplifica rodar o projeto localmente.
-- **CSS puro com custom properties**, sem framework nem CDN externo:
-  paleta e espaçamento centralizados em variáveis (`:root`), drag-and-drop
-  nativo (`dragenter`/`drop`) sem biblioteca, e estados de carregamento/erro
-  como elementos próprios da página em vez de `alert()`.
+- **Padrão Strategy por tipo de documento:** cada extrator tem seu próprio universo de
+  rótulos. Adicionar um tipo novo é criar um arquivo e registrá-lo em uma lista, sem
+  mexer nos existentes.
+- **Extração por rótulo, não regex solto:** procura o rótulo conhecido e usa o texto
+  logo depois dele, o que permite associar CNPJ/CPF ao nome da entidade mais próxima.
+- **Confiança por evidência:** "achei o rótulo" não basta (já saiu emissor errado com
+  rótulo achado). Na DANFE, o CNPJ e o número da nota são conferidos contra a chave de
+  acesso e os totais contra a fórmula da nota; a soma dos itens é comparada com o total
+  dos produtos.
+- **Texto girado descartado na leitura:** o canhoto da DANFE é impresso girado e o
+  `pdfplumber` o extrai como lixo antes do conteúdo real. Descartar na origem corrige
+  todos os extratores de uma vez.
+- **`client.messages.parse(output_format=...)`** (Structured Outputs) em vez de pedir
+  JSON no prompt: a resposta já vem validada pelo schema Pydantic.
+- **Campos numéricos flexíveis** (`float | string`): viram número quando a conversão é
+  confiável e caem para texto quando não é, sem quebrar a extração.
+- **Excel: só valor monetário vira número.** Chave de acesso (44 dígitos; o Excel só
+  guarda 15 de precisão), CFOP e número do documento (zeros à esquerda) ficam texto.
+  Todo texto vindo do PDF é gravado como texto, nunca como fórmula.
+- **Frontend servido pelo próprio FastAPI**, em HTML/CSS/JS puro: um único processo em
+  `localhost:8000`, sem CORS e sem CDN externo.
 
 ## Limitações conhecidas / próximos passos
 
-- Modo básico extrai itens de tabela só pra DANFE (por posição x/y das
-  palavras) — boleto e documentos genéricos ficam com `itens` vazio. O
-  modo IA cobre também esses casos.
-- A tabela de itens da DANFE exige texto de origem digital (posição
-  confiável de palavra); em PDF escaneado (origem OCR) `itens` fica
-  vazio nesse modo.
-- DANFE: campos fiscais adicionais (série, natureza da operação, data de
-  saída, IE do emitente, ICMS/frete como campos de documento) ainda não
-  implementados — dependem de confirmar o rótulo exato num dump real
-  antes de codar.
-- OCR precisa do Tesseract instalado separadamente no sistema (ver
-  "Instalando o Tesseract" acima) — sem ele, PDFs escaneados continuam
-  retornando só o aviso, sem texto.
-- A correção de confusão de caracteres do OCR cobre CNPJ, CPF e valores
-  monetários; outros campos numéricos (ex: número do documento) não
-  passam por essa correção ainda.
-- Heurísticas de regex do modo básico foram desenhadas para o formato de
-  documento comercial brasileiro comum (datas `dd/mm/aaaa`, valores em
-  `R$`) — podem não pegar todos os formatos.
+- Só a DANFE tem tabela de itens no modo básico; boleto e documentos genéricos ficam
+  com `itens` vazio (o modo IA cobre esses casos).
+- OCR: ver os limites na seção [OCR](#ocr-opcional).
+- DANFE: série, natureza da operação, data de saída e IE do emitente ainda não são
+  extraídos como campos.
+- Interface de lote (vários PDFs de uma vez) ainda não existe; hoje a tela envia um
+  documento por vez, embora a API e o Excel já aceitem uma lista.
+- As heurísticas foram desenhadas para o formato comercial brasileiro (datas
+  `dd/mm/aaaa`, valores em `R$`) e validadas com um boleto e uma DANFE reais — outros
+  layouts podem exigir ajustes.
+
+## Autor
+
+João Pedro Ferreira — [LinkedIn](https://www.linkedin.com/in/joaopedroferreira-2824d9324/)
 
 ## Status
 
-MVP funcional: upload → extração (básica ou via IA) → tabela → download em
-Excel. Estrutura completa e decisões de arquitetura em `CLAUDE.md`.
+MVP funcional de ponta a ponta: upload → extração (básica ou via IA) → tabela com
+confiança → correção → download em Excel.
