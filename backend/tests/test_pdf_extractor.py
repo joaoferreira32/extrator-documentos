@@ -98,3 +98,50 @@ def test_ocr_real_extrai_texto_de_pdf_so_imagem(tmp_path):
 
     assert resultado.origem == "ocr"
     assert "TESTE" in resultado.texto.upper()
+
+
+def _pdf_com_texto_girado(apenas_girado: bool = False) -> bytes:
+    """Texto horizontal + rotulos laterais girados a 90/270 graus, como o
+    canhoto e os rotulos de secao de uma DANFE real."""
+    doc = pymupdf.open()
+    pagina = doc.new_page(width=842, height=595)
+    if not apenas_girado:
+        pagina.insert_text((100, 100), "Identificacao do emitente EMPRESA EXEMPLO LTDA", fontsize=9)
+        pagina.insert_text((100, 120), "Valor Total da Nota 10,00", fontsize=9)
+    pagina.insert_text((30, 300), "TRANSPORTADOS", fontsize=7, rotate=90)
+    pagina.insert_text((50, 300), "COMPUTADORES", fontsize=7, rotate=270)
+    return doc.tobytes()
+
+
+def test_texto_girado_e_descartado_na_leitura():
+    """Bug real (DANFE): o canhoto/rotulos laterais giravam e o pdfplumber
+    os extraia como linhas de letras invertidas ANTES do conteudo -- a
+    primeira linha do documento virava lixo ("FOLHA 1/", "e-FN"...)."""
+    resultado = pdf_extractor.extrair_texto(_pdf_com_texto_girado())
+
+    assert "TRANSPORTADOS" not in resultado.texto
+    assert "SODATROPSNART" not in resultado.texto
+    assert "COMPUTADORES" not in resultado.texto
+    assert "SERODATUPMOC" not in resultado.texto
+    assert resultado.texto.splitlines()[0].startswith("Identificacao do emitente")
+    assert resultado.caracteres_girados_descartados == len("TRANSPORTADOS") + len("COMPUTADORES")
+
+    # As palavras posicionadas (usadas pela tabela) tambem ficam sem o lixo.
+    palavras = {p.texto for pagina in resultado.paginas_palavras for p in pagina}
+    assert "EMPRESA" in palavras
+    assert not any("TRANSPORTADOS" in p or "SODATROPSNART" in p for p in palavras)
+
+
+def test_pagina_inteira_girada_nao_e_apagada():
+    """Salvaguarda: se a MAIORIA do texto da pagina esta "girada" (pagina
+    inteira em paisagem, por exemplo), filtrar apagaria o documento -- entao
+    mantem tudo."""
+    resultado = pdf_extractor.extrair_texto(_pdf_com_texto_girado(apenas_girado=True))
+
+    assert resultado.caracteres_girados_descartados == 0
+    assert resultado.texto.strip() != ""
+
+
+def test_pdf_sem_texto_girado_nao_descarta_nada():
+    resultado = pdf_extractor.extrair_texto(_pdf_com_texto("Texto normal e comprido o bastante"))
+    assert resultado.caracteres_girados_descartados == 0

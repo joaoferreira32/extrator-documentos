@@ -1,24 +1,37 @@
 """Testes do DanfeExtractor e da reconstrucao de tabela por coordenadas.
 
-Fixtures construidas a partir de dumps reais (/debug/extract-words e
-/debug/extract-text) de uma DANFE real (nota fiscal da Dell) -- a ORDEM
-das linhas do texto e exatamente a que o pdfplumber produziu (nao uma
-linearizacao "rotulo: valor" inventada). Dados do destinatario (pessoa
-fisica de terceiro) sao ficticios ("FULANO DE TAL"/CPF zerado) porque a
-propria pessoa nao deu consentimento -- o usuario anonimizou antes de
-repassar. Emitente/CNPJ/chave de acesso/tabela de itens sao reais e
-publicos. Ver CLAUDE.md para o historico de por que essa arquitetura
-exige material real em vez de suposicao de layout: a primeira versao
-desta fixture era uma linearizacao escrita a mao (nao uma extracao real),
-e nao reproduzia bugs reais de ordem de leitura (emissor saindo "DANFE",
-destinatario/data_emissao/valor_total vazios) que so apareceram testando
-o PDF real no navegador.
+SOBRE A FIXTURE DE TEXTO (danfe_real_anonimizado.txt) -- leia antes de
+confiar nela: e um COMPOSTO de trechos reais, NAO as 84 linhas completas
+que o extrator recebe.
+- Vem da saida de /debug/extractor-input de uma DANFE real (anonimizada
+  pelo usuario): linhas 00-02, 14-15, 38 (texto girado do canhoto), 39-41
+  (emitente), 51-52 (destinatario, com rotulos e valores COLADOS na mesma
+  linha), 75-76 (cabecalho da tabela e linha do produto).
+- Endereco/IE/CNPJ/chave e o bloco de totais vem de um trecho colado
+  ANTES, com a adjacencia entre os blocos ASSUMIDA (nao confirmada).
+- Nao ha linha de numero da nota ("Nº ...") nem o resto das linhas.
+Quando o usuario fornecer as 84 linhas completas, esta fixture deve ser
+substituida por elas (ver CLAUDE.md, "Diagnosticando um PDF real").
+
+Historico: uma fixture anterior tratava um trecho como se fosse o texto
+inteiro e os testes passavam enquanto o PDF real falhava (emissor
+"FOLHA 1/", destinatario com linha de rotulos, itens vazio).
+
+Dados do destinatario sao ficticios (pessoa fisica de terceiro).
+Emitente/CNPJ/chave de acesso/tabela de itens sao reais e publicos.
+Trechos marcados "SINTETICO" abaixo sao montados a mao de proposito e nao
+fingem ser texto real.
 """
 import json
 from pathlib import Path
 
 from app.extractors.base import ContextoExtracao, Palavra
-from app.extractors.danfe import DanfeExtractor
+from app.extractors.danfe import (
+    DanfeExtractor,
+    extrair_destinatario,
+    extrair_emissor,
+    partes_da_chave,
+)
 from app.extractors.danfe_tabela import _eh_texto_vertical, montar_tabela_itens
 
 FIXTURE_TEXTO = Path(__file__).parent / "fixtures" / "danfe_real_anonimizado.txt"
@@ -45,27 +58,107 @@ def test_deteccao_danfe():
     assert DanfeExtractor().pontuacao_deteccao(contexto) > 0.5
 
 
-def test_extrair_emissor_pula_titulo_da_danfe():
-    """Regressao do bug real: buscar 'Emitente' como rotulo generico
-    pegava a legenda "Identificacao do Emitente" e a "proxima linha" caia
-    numa caixa vizinha, devolvendo "DANFE" (o titulo do documento) como
-    emissor. _extrair_emissor usa a primeira linha do documento, mas pula
-    explicitamente marcadores de titulo conhecidos (MARCADORES_DETECCAO)
-    -- este teste cobre esse pulo mesmo que, na fixture real completa, o
-    nome ja seja a primeira linha (sem titulo antes)."""
-    texto = "\n".join(
-        [
-            "DANFE",
-            "Documento Auxiliar da Nota Fiscal Eletronica",
-            "EMPRESA EXEMPLO LTDA",
-            "CNPJ: 11.222.333/0001-44",
-        ]
-    )
+def test_emissor_vem_da_linha_apos_identificacao_do_emitente():
+    """Layout real: a legenda tem o titulo da caixa vizinha colado
+    ("...emitente DANFE") e o nome, na linha seguinte, tem o titulo da
+    outra caixa no fim ("... Documento Auxiliar da"). O rotulo generico
+    "Emitente" capturava "DANFE" da primeira; e a "FOLHA 1/" vinha do texto
+    girado que precede tudo."""
+    linhas = [
+        "FOLHA 1/",
+        "e-FN",
+        "Identificação do emitente DANFE",
+        "DELL COMPUTADORES DO BRASIL LTDA Documento Auxiliar da",
+        "Nota Fiscal Eletrônica",
+        "72.381.189/0010-01",
+    ]
+    nome, documento = extrair_emissor(linhas)
+    assert nome == "DELL COMPUTADORES DO BRASIL LTDA"
+    assert documento == "CNPJ 72.381.189/0010-01"
+
+
+def test_emissor_sem_a_legenda_nao_inventa():
+    """SINTETICO: sem "Identificação do emitente" nao ha ancora -- devolve
+    None em vez de chutar a primeira linha (que era "FOLHA 1/")."""
+    assert extrair_emissor(["FOLHA 1/", "DANFE", "EMPRESA EXEMPLO LTDA"]) == (None, None)
+
+
+def test_destinatario_com_rotulos_e_valores_colados_na_mesma_linha():
+    """Layout real (linha 51): os rotulos vem primeiro, todos colados, e os
+    valores depois -- o nome fica entre o ultimo rotulo e o CPF."""
+    linhas = [
+        "NOME/RAZÃO SOCIAL CNPJ/CPF DATA DA EMISSÃO FULANO DE TAL SILVA 000.000.000-00 "
+        "15/4/2026 ENDEREÇO BAIRRO/DISTRITO CEP DATA DA ENTRADA/SAÍDA RUA EXEMPLO, nº 1 CENTRO 00000-000",
+    ]
+    assert extrair_destinatario(linhas) == ("FULANO DE TAL SILVA", "alta")
+
+
+def test_destinatario_com_rotulo_e_valor_em_linhas_separadas():
+    """SINTETICO: outro layout (rotulos numa linha, valores na seguinte)."""
+    linhas = ["NOME/RAZÃO SOCIAL CNPJ/CPF DATA DA EMISSÃO", "FULANO DE TAL 000.000.000-00 15/4/2026"]
+    assert extrair_destinatario(linhas) == ("FULANO DE TAL", "alta")
+
+
+def test_destinatario_sem_cpf_e_media_e_nome_comecando_com_rotulo_curto_nao_e_cortado():
+    """SINTETICO: sem CPF/CNPJ apos o nome nao ha a evidencia estrutural
+    ("media"). "UFRJ ..." comeca com "UF" (um rotulo do bloco) mas nao
+    pode ser tratado como rotulo -- limite de palavra."""
+    linhas = ["NOME/RAZÃO SOCIAL CNPJ/CPF UFRJ COMERCIO LTDA"]
+    assert extrair_destinatario(linhas) == ("UFRJ COMERCIO LTDA", "media")
+
+
+def test_destinatario_so_com_rotulos_devolve_none():
+    assert extrair_destinatario(["NOME/RAZÃO SOCIAL CNPJ/CPF DATA DA EMISSÃO"]) == (None, "")
+
+
+def test_partes_da_chave():
+    partes = partes_da_chave("35260472381189001001550010000123451123456786")
+    assert partes["cnpj"] == "72381189001001"
+    assert partes["numero"] == "000012345"
+    assert partes["serie"] == "001"
+    assert partes["aamm"] == "2604"
+
+
+def _resultado_com_linhas(texto: str):
     contexto = ContextoExtracao(texto=texto, linhas=texto.splitlines(), paginas_palavras=None)
-    emissor = DanfeExtractor()._extrair_emissor(contexto)
-    assert emissor is not None
-    assert "EMPRESA EXEMPLO LTDA" in emissor
-    assert "DANFE" not in emissor
+    return DanfeExtractor().extrair(contexto)
+
+
+def test_numero_documento_conferido_com_a_chave_sobe_para_alta():
+    """SINTETICO (a fixture composta nao tem linha de numero): o fallback
+    "Nº..." acha o numero, mas so com "baixa"; a chave de acesso (DV
+    valido) traz o mesmo numero -- evidencia independente."""
+    texto = FIXTURE_TEXTO.read_text(encoding="utf-8") + "Nº000012345\n"
+    resultado = _resultado_com_linhas(texto)
+    assert resultado.documento.numero_documento == "000012345"
+    assert resultado.confiancas["numero_documento"] == "alta"
+
+
+def test_numero_documento_que_contradiz_a_chave_vira_baixa_com_aviso():
+    texto = FIXTURE_TEXTO.read_text(encoding="utf-8") + "Nº999999999\n"
+    resultado = _resultado_com_linhas(texto)
+    assert resultado.confiancas["numero_documento"] == "baixa"
+    assert any("numero da nota" in aviso for aviso in resultado.avisos)
+
+
+def test_emissor_com_cnpj_diferente_da_chave_vira_baixa_com_aviso():
+    texto = FIXTURE_TEXTO.read_text(encoding="utf-8").replace("72.381.189/0010-01", "11.222.333/0001-81")
+    resultado = _resultado_com_linhas(texto)
+    assert resultado.confiancas["emissor"] == "baixa"
+    assert any("CNPJ do emitente" in aviso for aviso in resultado.avisos)
+
+
+def test_emissor_do_generico_com_titulo_e_descartado_e_sem_titulo_vira_baixa():
+    """SINTETICO: sem a legenda real, o generico ("Emitente: X") so
+    sobrevive como "baixa"; se ele capturou o titulo "DANFE" (o bug real),
+    e descartado."""
+    ok = _resultado_com_linhas("DANFE\nEmitente: EMPRESA EXEMPLO LTDA\n")
+    assert ok.documento.emissor == "EMPRESA EXEMPLO LTDA"
+    assert ok.confiancas["emissor"] == "baixa"
+
+    ruim = _resultado_com_linhas("Emitente DANFE\n")
+    assert ruim.documento.emissor is None
+    assert "emissor" not in ruim.confiancas
 
 
 def test_danfe_completa():
@@ -84,21 +177,20 @@ def test_danfe_completa():
     assert campos.get("Chave de Acesso") == "35260472381189001001550010000123451123456786"
     assert resultado.confiancas.get("Chave de Acesso") == "alta"
 
-    # emissor: o nome aparece antes de qualquer rotulo no documento real
-    # (ver DanfeExtractor._extrair_emissor) -- buscar por rotulo generico
-    # "Emitente" e o que causava o bug real (emissor saindo "DANFE").
-    assert doc.emissor is not None and "DELL COMPUTADORES DO BRASIL LTDA" in doc.emissor
-    assert "72.381.189/0010-01" in doc.emissor
+    # emissor: a fixture comeca com texto girado do canhoto ("FOLHA 1/",
+    # "e-FN", ...); o nome vem da linha apos "Identificação do emitente",
+    # sem o "Documento Auxiliar da" da caixa vizinha. Confianca "alta"
+    # porque o CNPJ lido bate com o CNPJ embutido na chave de acesso.
+    assert doc.emissor == "DELL COMPUTADORES DO BRASIL LTDA (CNPJ 72.381.189/0010-01)"
+    assert resultado.confiancas.get("emissor") == "alta"
 
-    # destinatario: rotulo real e "NOME/RAZÃO SOCIAL", nao "Destinatário"
-    # (que o GenericExtractor buscava e nunca encontrava).
-    assert doc.destinatario is not None and "FULANO DE TAL" in doc.destinatario
+    # destinatario: SO o nome (sem CPF nem rotulos), da mesma linha dos
+    # rotulos, entre o ultimo rotulo e o CPF.
+    assert doc.destinatario == "FULANO DE TAL SILVA"
     assert resultado.confiancas.get("destinatario") == "alta"
 
-    # data_emissao: rotulo real e "DATA DA EMISSÃO" ("da", nao "de") e o
-    # formato tem mes sem zero a esquerda ("15/4/2026") -- os dois motivos
-    # reais de o campo vir vazio antes do fix.
-    assert doc.data_emissao == "15/4/2026"
+    # data_emissao normalizada pra dd/mm/aaaa (o documento imprime "15/4/2026").
+    assert doc.data_emissao == "15/04/2026"
     assert resultado.confiancas.get("data_emissao") == "alta"
 
     # valor_total: no documento real o valor vem ANTES do rotulo "VALOR
@@ -204,3 +296,51 @@ def test_eh_texto_vertical_fora_da_faixa_x_nao_e_descartado():
     com um rotulo rotacionado."""
     fora_da_faixa = Palavra(texto="ALGO", x0=300, x1=308, top=150, bottom=210)
     assert _eh_texto_vertical(fora_da_faixa) is False
+
+
+def _palavra(texto, x0, top, largura=8):
+    return Palavra(texto=texto, x0=x0, x1=x0 + largura, top=top, bottom=top + 7.3)
+
+
+def test_fragmentos_do_cabecalho_abaixo_dele_nao_encerram_a_tabela():
+    """Reproduz o FORMATO do bug real (trace de /debug/extractor-input):
+    cabecalho em 413.6 e, logo abaixo (416.7), uma linha so de fragmentos
+    do cabecalho ("IC M S IP I") -- sem CODIGO e nao e so descricao, entao
+    era "fim" e a tabela saia vazia sem nunca chegar no produto.
+
+    Aqui usa 416.8: o cabecalho da fixture esta em 413.7 e a diferenca
+    precisa passar de 3.0 (tolerancia de agrupamento de linha), como no
+    real (3.1). As posicoes x dos fragmentos sao plausiveis (coluna de
+    ICMS/IPI), nao medidas -- o que importa e o top e a ausencia de
+    CODIGO."""
+    paginas = _carregar_paginas_palavras()
+    paginas[0].extend(
+        [
+            _palavra("IC", 705.0, 416.8),
+            _palavra("M", 714.0, 416.8),
+            _palavra("S", 721.0, 416.8),
+            _palavra("IP", 749.7, 416.8),
+            _palavra("I", 760.0, 416.8),
+        ]
+    )
+    diagnostico: list[dict] = []
+    tabela = montar_tabela_itens(paginas, diagnostico=diagnostico)
+
+    assert len(tabela.itens) == 1
+    assert tabela.itens[0].descricao == "Mochila Dell Gaming Backpack 17, GM1720PM"
+    decisoes = [linha["decisao"] for linha in diagnostico[0]["linhas"]]
+    assert decisoes[0].startswith("pulada: fragmento do cabecalho")
+    assert decisoes[1] == "item"
+
+
+def test_linha_fim_depois_do_primeiro_item_continua_encerrando_a_tabela():
+    """A tolerancia a fragmentos vale so ANTES do primeiro item: depois
+    dele, uma linha sem CODIGO (rodape/secao seguinte) ainda encerra a
+    tabela, mesmo estando perto do cabecalho."""
+    paginas = _carregar_paginas_palavras()
+    paginas[0].extend([_palavra("Rodape", 705.0, 430.0), _palavra("qualquer", 749.7, 430.0)])
+    diagnostico: list[dict] = []
+    tabela = montar_tabela_itens(paginas, diagnostico=diagnostico)
+
+    assert len(tabela.itens) == 1
+    assert diagnostico[0]["linhas"][-1]["decisao"].startswith("fim: sem CODIGO")

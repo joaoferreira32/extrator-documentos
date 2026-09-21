@@ -13,7 +13,7 @@ False` para quem chama decidir a mensagem certa.
 import logging
 import shutil
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path
 from typing import Optional
@@ -67,6 +67,14 @@ class TextoExtraido:
     so o texto que o Tesseract reconheceu. Extratores que reconstroem
     tabela por coordenada (ex: DANFE) dependem disso e devem degradar
     graciosamente quando for None."""
+    paginas_texto: list[str] = field(default_factory=list)
+    """Texto de cada pagina separado (so na origem "digital"; vazio no
+    OCR). `texto` e a juncao disso com "\\n" -- guardado so pra o endpoint
+    de debug mostrar onde cada pagina comeca, ja que essa fronteira some
+    na juncao."""
+    caracteres_girados_descartados: int = 0
+    """Quantos caracteres de texto girado (canhoto, rotulos laterais) foram
+    descartados na leitura -- ver `_sem_texto_girado`."""
 
     @property
     def parece_escaneado(self) -> bool:
@@ -86,7 +94,10 @@ def extrair_texto(conteudo_pdf: bytes) -> TextoExtraido:
     with pdfplumber.open(BytesIO(conteudo_pdf)) as pdf:
         paginas_texto = []
         paginas_palavras = []
+        girados_descartados = 0
         for pagina in pdf.pages:
+            pagina, descartados = _sem_texto_girado(pagina)
+            girados_descartados += descartados
             paginas_texto.append(pagina.extract_text() or "")
             paginas_palavras.append(
                 [
@@ -109,6 +120,8 @@ def extrair_texto(conteudo_pdf: bytes) -> TextoExtraido:
             numero_paginas=numero_paginas,
             origem="digital",
             paginas_palavras=paginas_palavras,
+            paginas_texto=paginas_texto,
+            caracteres_girados_descartados=girados_descartados,
         )
 
     texto_ocr, ocr_disponivel = _tentar_ocr(conteudo_pdf)
@@ -127,7 +140,33 @@ def extrair_texto(conteudo_pdf: bytes) -> TextoExtraido:
         origem="digital",
         ocr_disponivel=ocr_disponivel,
         paginas_palavras=paginas_palavras,
+        paginas_texto=paginas_texto,
+        caracteres_girados_descartados=girados_descartados,
     )
+
+
+def _sem_texto_girado(pagina):
+    """Devolve (pagina, quantos_caracteres_descartados) sem os caracteres
+    girados (`upright == False`, i.e. texto a 90/270 graus).
+
+    Bug real (DANFE): o canhoto e os rotulos laterais sao impressos girados,
+    e o pdfplumber os extrai como linhas de letras soltas/invertidas
+    ("SERODATUPMOC", "e-FN"...) ANTES do conteudo de verdade -- poluiam o
+    texto de qualquer extrator, e a primeira linha do documento virava
+    "FOLHA 1/". Descartar na leitura resolve na raiz, pra todos os
+    extratores, em vez de cada um se defender do lixo.
+
+    Salvaguarda: so filtra quando os girados sao MINORIA. Se a maior parte
+    do texto da pagina esta "girada" (pagina inteira em paisagem via
+    /Rotate, por exemplo), filtrar apagaria o documento -- nesse caso
+    mantem tudo. Limitacao conhecida: texto de cabeca pra baixo (180 graus)
+    continua `upright == True` e nao e descartado."""
+    caracteres = pagina.chars
+    girados = sum(1 for c in caracteres if not c.get("upright", True))
+    if girados == 0 or girados * 2 >= len(caracteres):
+        return pagina, 0
+    filtrada = pagina.filter(lambda obj: obj.get("object_type") != "char" or obj.get("upright", True))
+    return filtrada, girados
 
 
 def _tentar_ocr(conteudo_pdf: bytes) -> tuple[str, bool]:

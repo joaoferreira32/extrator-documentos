@@ -21,10 +21,16 @@ def selecionar_extrator(contexto: ContextoExtracao) -> ExtratorDocumento:
     return max(_EXTRATORES, key=lambda extrator: extrator.pontuacao_deteccao(contexto))
 
 
+def pontuacoes(contexto: ContextoExtracao) -> dict[str, float]:
+    """Pontuacao de deteccao de cada extrator registrado (so pra debug)."""
+    return {type(extrator).__name__: extrator.pontuacao_deteccao(contexto) for extrator in _EXTRATORES}
+
+
 __all__ = [
     "ContextoExtracao",
     "ExtratorDocumento",
     "Palavra",
     "ResultadoExtracao",
+    "pontuacoes",
     "selecionar_extrator",
 ]

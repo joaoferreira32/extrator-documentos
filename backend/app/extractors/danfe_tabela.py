@@ -66,6 +66,15 @@ MARCADORES_FIM_TABELA = [
     "dados adicionais",
 ]
 
+# Celulas de cabecalho com varias linhas ("ALÍQUOTA" / "ICMS" / "IPI"
+# empilhadas) saem do pdfplumber como fragmentos soltos ("IC M S IP I") em
+# linhas logo ABAIXO da linha de cabecalho (bug real: top 416.7 contra
+# cabecalho em 413.6). Sem CODIGO e sem ser so descricao, essa linha era
+# classificada "fim" e encerrava a tabela ANTES do primeiro item -- itens
+# vazio. Enquanto nenhum item comecou, linhas "fim" dentro desta distancia
+# vertical do cabecalho sao tratadas como resto do cabecalho e puladas.
+LIMITE_CABECALHO_MULTILINHA = 15.0
+
 
 def _eh_texto_vertical(p: Palavra) -> bool:
     largura = p.x1 - p.x0
@@ -232,17 +241,39 @@ class TabelaItensResultado:
     soma_valor_total: Optional[float]
 
 
-def montar_tabela_itens(paginas_palavras: list[list[Palavra]]) -> TabelaItensResultado:
+def montar_tabela_itens(
+    paginas_palavras: list[list[Palavra]], diagnostico: Optional[list[dict]] = None
+) -> TabelaItensResultado:
     """Reconstroi a tabela de itens de uma DANFE a partir das palavras
     posicionadas de cada pagina. Nunca levanta excecao -- se nao achar uma
     linha de cabecalho reconhecivel, devolve uma tabela vazia (quem chama
-    decide se isso vira aviso)."""
+    decide se isso vira aviso).
+
+    `diagnostico`, quando passado (lista vazia), recebe um dict por pagina
+    com o cabecalho achado (ou nao), as ancoras/limites de coluna e cada
+    linha examinada com a decisao tomada -- so pra /debug/extractor-input
+    mostrar POR QUE a tabela saiu vazia/curta sem duplicar esta logica em
+    outro lugar. Nao muda o resultado."""
     itens: list[ItemDocumento] = []
     cfops: list[str] = []
 
-    for palavras_pagina in paginas_palavras:
+    for numero_pagina, palavras_pagina in enumerate(paginas_palavras, start=1):
         linhas = _agrupar_linhas(palavras_pagina)
         linha_cabecalho = _achar_linha_cabecalho(linhas)
+
+        diag_pagina: Optional[dict] = None
+        if diagnostico is not None:
+            diag_pagina = {
+                "pagina": numero_pagina,
+                "cabecalho_encontrado": linha_cabecalho is not None,
+                "melhor_pontuacao_cabecalho": max(
+                    (len(_identificar_colunas(linha)) for linha in linhas), default=0
+                ),
+                "minimo_exigido": len(COLUNAS) // 2,
+                "linhas": [],
+            }
+            diagnostico.append(diag_pagina)
+
         if linha_cabecalho is None:
             continue
 
@@ -250,12 +281,33 @@ def montar_tabela_itens(paginas_palavras: list[list[Palavra]]) -> TabelaItensRes
         limites = _limites_colunas(ancoras)
         top_cabecalho = linha_cabecalho[0].top
 
+        if diag_pagina is not None:
+            diag_pagina["cabecalho_top"] = round(top_cabecalho, 1)
+            diag_pagina["cabecalho_texto"] = " ".join(p.texto for p in linha_cabecalho)
+            diag_pagina["ancoras"] = [(nome, round(x0, 1)) for nome, x0 in ancoras]
+
+        def _registrar(linha: list[Palavra], decisao: str, colunas: Optional[dict] = None) -> None:
+            if diag_pagina is None:
+                return
+            diag_pagina["linhas"].append(
+                {
+                    "top": round(linha[0].top, 1),
+                    "texto": " ".join(p.texto for p in linha),
+                    "decisao": decisao,
+                    "colunas": {
+                        nome: " ".join(p.texto for p in palavras)
+                        for nome, palavras in (colunas or {}).items()
+                    },
+                }
+            )
+
         item_atual: dict[str, list[Palavra]] | None = None
         for linha in linhas:
             if linha[0].top <= top_cabecalho:
                 continue  # cabecalho ou algo acima dele
 
             if _linha_e_marcador_fim(linha):
+                _registrar(linha, "fim: marcador de secao (MARCADORES_FIM_TABELA)")
                 break  # secao seguinte (ex: informacoes complementares) -- tabela acabou
 
             valores_coluna: dict[str, list[Palavra]] = {}
@@ -265,6 +317,17 @@ def montar_tabela_itens(paginas_palavras: list[list[Palavra]]) -> TabelaItensRes
                     valores_coluna.setdefault(nome_coluna, []).append(p)
 
             tipo = _tipo_linha(valores_coluna)
+
+            resto_do_cabecalho = (
+                tipo == "fim"
+                and item_atual is None
+                and linha[0].top - top_cabecalho <= LIMITE_CABECALHO_MULTILINHA
+            )
+            if resto_do_cabecalho:
+                _registrar(linha, "pulada: fragmento do cabecalho (celula de varias linhas)", valores_coluna)
+                continue
+
+            _registrar(linha, tipo if tipo != "fim" else "fim: sem CODIGO e nao e so descricao", valores_coluna)
 
             if tipo == "continuacao":
                 if item_atual:

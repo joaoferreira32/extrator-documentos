@@ -17,10 +17,17 @@ from app.extractors.base import ContextoExtracao, ResultadoExtracao
 from app.schemas import DocumentoExtraido
 
 
-def extrair_com_metadados(texto: str, paginas_palavras=None) -> ResultadoExtracao:
-    contexto = ContextoExtracao(
+def montar_contexto(texto: str, paginas_palavras=None) -> ContextoExtracao:
+    """Unico lugar que transforma o texto lido do PDF no que o extrator
+    recebe. O endpoint /debug/extractor-input usa esta mesma funcao, entao
+    o que ele mostra e, por construcao, o que o extrator ve."""
+    return ContextoExtracao(
         texto=texto, linhas=texto.splitlines(), paginas_palavras=paginas_palavras
     )
+
+
+def extrair_com_metadados(texto: str, paginas_palavras=None) -> ResultadoExtracao:
+    contexto = montar_contexto(texto, paginas_palavras)
     extrator = extractors.selecionar_extrator(contexto)
     return extrator.extrair(contexto)
 

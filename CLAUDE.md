@@ -40,11 +40,13 @@ backend/app/
   excel_exporter.py    # ExtractionResult -> .xlsx
 backend/tests/
   fixtures/boleto_real_anonimizado.txt     # texto bruto de boleto real (dados trocados)
-  fixtures/danfe_real_anonimizado.txt      # texto bruto de DANFE real (destinatario ficticio)
+  fixtures/danfe_real_anonimizado.txt      # COMPOSTO de trechos reais (nao as 84 linhas) -- ver docstring do teste
   fixtures/danfe_palavras_anonimizado.json # palavras posicionadas (x0/x1/top/bottom) da mesma DANFE
   test_basic_extractor.py               # compat da funcao publica extrair()
   test_extractors_boleto.py             # BoletoExtractor isolado, com a fixture real acima
-  test_extractors_danfe.py              # DanfeExtractor + montar_tabela_itens, fixtures reais acima
+  test_extractors_danfe.py              # DanfeExtractor + montar_tabela_itens (fixture de texto e um TRECHO, nao a entrada real)
+  test_debug_endpoints.py               # endpoints de debug mostram exatamente o que o extrator recebe
+  test_comum.py                         # helpers compartilhados (normalizar_data)
   test_detector.py                      # selecionar_extrator() roteia pro extrator certo
   test_chave_acesso.py                  # digito verificador da chave de acesso (algoritmo publico)
   test_pdf_extractor.py                 # orquestracao digital->OCR (mocks) + 1 teste OCR real (skip se indisponivel)
@@ -173,8 +175,9 @@ Detecção por marcador (`MARCADORES_DETECCAO`: `danfe`, `documento auxiliar
 da nota fiscal eletr[ônica]`, `chave de acesso`, `protocolo de autorização
 de uso`, mais `nf-e`/`cfop` que já existiam). `DanfeExtractor` parte de
 `GenericExtractor` para os campos universais, mas **sobrescreve
-emissor/destinatário/valor_total com lógica própria** — ver "Layout real
-de uma DANFE" abaixo pra entender por quê. Por cima disso:
+emissor/destinatário/valor_total com lógica própria** (e confere
+número/emissor contra a chave de acesso) — ver "Layout real de uma DANFE"
+abaixo pra entender por quê. Por cima disso:
 
 - **Chave de acesso**: 44 dígitos + dígito verificador módulo 11, pesos
   cíclicos 2–9 — algoritmo público e padronizado pela SEFAZ, não depende
@@ -200,67 +203,91 @@ de uma DANFE" abaixo pra entender por quê. Por cima disso:
   confirmar o rótulo exato num dump real antes de codar, pra não repetir
   o erro de supor layout sem material.
 
-#### Layout real de uma DANFE: rótulo pode vir antes OU depois do valor
+#### Layout real de uma DANFE (confirmado com `/debug/extractor-input`)
 
-Confirmado com um dump real via `/debug/extract-text` (a mesma DANFE da
-Dell): uma DANFE real **mistura duas convenções diferentes** de onde o
-rótulo aparece em relação ao valor, dependendo da caixa:
+Tudo abaixo vem da saída de `/debug/extractor-input` de uma DANFE real
+(Dell), com dados pessoais trocados pelo usuário e a estrutura de linhas
+preservada. **Histórico do que deu errado antes:** as correções anteriores
+foram feitas em cima de um TRECHO colado à mão que o usuário disse ser o
+texto completo — não era. O PDF real começava com texto girado ("FOLHA
+1/", "e-FN", ...), e o bloco do destinatário saía com rótulos e valores
+colados numa linha só. Resultado: 33 testes passando e o PDF real falhando
+em emissor, destinatário e itens (commit 5e56783). A hipótese que eu tinha
+posto aqui ("o nome do emitente vem antes de qualquer rótulo, no topo") era
+**falsa**. Regra que sai disso: não corrigir sem ter visto o texto exato
+(ver "Diagnosticando um PDF real").
 
-- **Destinatário/datas** (`NOME/RAZÃO SOCIAL`, `DATA DA EMISSÃO`, ...):
-  rótulo PRIMEIRO, valor na linha seguinte — o padrão "normal" que
-  `comum.localizar_rotulo` já assumia.
-- **Grade de totais** (`VALOR TOTAL DA NOTA`, `VALOR TOTAL DOS PRODUTOS`,
-  `BASE DE CÁLCULO DO ICMS`, ...): valor PRIMEIRO, rótulo como legenda na
-  linha seguinte (ex: `"229,00"` na linha logo ANTES de `"VALOR TOTAL DA
-  NOTA"`). Isso é uma repetição de caixas visuais (valor em destaque,
-  legenda pequena embaixo) — cada linha vizinha a um rótulo dessa grade
-  tem *algum* valor monetário (o campo anterior ou o seguinte), então não
-  dá pra simplesmente "tentar as duas direções e aceitar a que bater": as
-  duas sempre batem, só uma é a certa.
-- **Emitente**: o nome da empresa aparece **antes de qualquer rótulo**,
-  logo no topo do documento — não tem "rótulo: valor" nenhum ali.
+**1. Texto girado polui tudo (`pdf_extractor._sem_texto_girado`).** O
+canhoto e os rótulos laterais são impressos girados (90/270°) e o
+pdfplumber os extrai como linhas de letras soltas/invertidas ("FOLHA 1/",
+"e-FN", "SERODATUPMOC", "SODATROPSNART"...) ANTES do conteúdo real (as 39
+primeiras linhas da DANFE de teste). Descartados na leitura via `char["upright"]
+== False` + `page.filter` — na raiz, vale pra todos os extratores e também
+pras palavras posicionadas da tabela. Verificado empiricamente que
+`upright` é `False` a 90°/270°. Salvaguardas/limites: (a) só filtra quando
+os girados são MINORIA da página (página inteira girada por `/Rotate` não é
+apagada); (b) texto de **cabeça pra baixo (180°) continua `upright=True`** e
+não é descartado — a extração o devolve invertido. `TextoExtraido.
+caracteres_girados_descartados` e `/debug/extractor-input` mostram quantos
+foram descartados. O filtro por geometria em `danfe_tabela._eh_texto_
+vertical` continua como rede de segurança.
 
-Isso gerou 4 bugs reais, só descobertos testando o PDF real no navegador
-(a fixture de texto anterior era uma linearização escrita à mão, não uma
-extração real, e não reproduzia nenhum deles):
+**2. Emitente** (`danfe.extrair_emissor`). A legenda é `"Identificação do
+emitente"` e o nome vem na **linha seguinte**, mas o pdfplumber cola texto da
+caixa vizinha nas duas linhas:
 
-1. **`emissor` saía `"DANFE"`**: `GenericExtractor` busca o rótulo
-   genérico `"Emitente"`/`"Fornecedor"`, que bate como substring dentro da
-   legenda `"Identificação do Emitente"`. Como essa legenda funciona como
-   legenda-embaixo-do-valor (não "rótulo: valor"), a "próxima linha" que
-   `localizar_rotulo` tentava como fallback pertencia à caixa vizinha (o
-   título `"DANFE"`), não ao nome do emitente de verdade. **Corrigido**
-   com `DanfeExtractor._extrair_emissor`: pega a primeira linha do
-   documento que parece um nome (`comum.parece_nome`) e não é um dos
-   `MARCADORES_DETECCAO` (evita recapturar `"DANFE"`/`"NF-e"`/etc. caso o
-   nome não seja mesmo a primeira linha em algum layout) — estrutural,
-   não depende de rótulo nenhum. O CNPJ do emitente fica até 7 linhas
-   depois do nome (depois do bloco de endereço), então essa busca usa
-   `janela=10` em `documento_fiscal_proximo` em vez do default (3).
-2. **`destinatario` vazio**: `ROTULOS_DESTINATARIO` genérico
-   (`"Destinatário"`, `"Cliente"`) não bate com o rótulo real
-   `"NOME/RAZÃO SOCIAL"`. Corrigido com `ROTULOS_DESTINATARIO_DANFE`
-   específico de DANFE (não adicionado ao genérico pra não arriscar
-   ambiguidade com outro tipo de documento).
-3. **`data_emissao` vazio**: dois bugs empilhados. (a) `ROTULOS_DATA_EMISSAO`
-   só tinha `"Data de Emissão"` — o rótulo real usa `"da"`, não `"de"`
-   (`"DATA DA EMISSÃO"`); variante adicionada em `generico.py` (genérica,
-   não específica de DANFE — as duas preposições são válidas em
-   português). (b) mesmo com o rótulo certo, `DATA_RE` exigia `\d{2}`
-   pra dia E mês — a data real vem sem zero à esquerda no mês
-   (`"15/4/2026"`), rejeitada pelo regex. Relaxado pra `\d{1,2}`.
-4. **`valor_total` vazio** (e a validação de soma da tabela sempre
-   avisava divergência): `comum.extrair_valor_rotulo` só olhava a MESMA
-   linha do rótulo — sem fallback nenhum pra linha vizinha. Adicionado
-   fallback bidirecional (linha seguinte E anterior), com um parâmetro
-   `preferir_linha_anterior` pra controlar a ORDEM de tentativa: DANFE
-   passa `True` (grade de totais, valor antes do rótulo — ver acima),
-   boleto continua com o default `False` (linha seguinte primeiro, único
-   padrão que boleto usa, comportamento já testado preservado).
+    Identificação do emitente DANFE
+    DELL COMPUTADORES DO BRASIL LTDA Documento Auxiliar da
+    Nota Fiscal Eletrônica
 
-Os 4 bugs (mais o item "fantasma" de linha vertical/coluna, já corrigido
-antes) só apareceram com o PDF real — reforça a mesma lição já documentada
-pro boleto: fixture escrita à mão não substitui um dump real.
+Por isso o rótulo genérico `"Emitente"` (do `GenericExtractor`) bate na
+primeira linha e captura `"DANFE"` como emissor — esse era o bug original.
+Agora: ancora em `Identificação do emitente`, pega o resto da linha (se
+sobrar algo além do título) ou a linha seguinte, e **corta no título da caixa
+vizinha** (`documento auxiliar`, `danfe`). O emissor do `GenericExtractor` é
+sempre descartado; se a legenda não existe (outro layout), o genérico só
+sobrevive com confiança `"baixa"` e nunca se contiver o título.
+
+**3. Destinatário** (`danfe.extrair_destinatario`). Rótulos e valores vêm
+COLADOS na mesma linha (pdfplumber junta a linha de rótulos e a de valores
+quando estão próximas na vertical):
+
+    NOME/RAZÃO SOCIAL CNPJ/CPF DATA DA EMISSÃO FULANO DE TAL SILVA 000.000.000-00 15/4/2026 ENDEREÇO ...
+
+O nome é o que fica **entre o último rótulo da sequência inicial e o
+CPF/CNPJ**. Pula rótulos consecutivos do bloco (`ROTULOS_BLOCO_DESTINATARIO`,
+com limite de palavra: `"UF"` não casa dentro de `"UFRJ"`), corta no
+primeiro CPF/CNPJ, data ou rótulo, e devolve **só o nome** (sem CPF).
+Também aceita o layout de valores na linha seguinte. O destinatário do
+`GenericExtractor` é descartado (buscava `"Destinatário"`, que bate no título
+da seção e devolvia uma linha inteira de rótulos).
+
+**4. Confiança por evidência, não por ter achado rótulo.** Antes,
+emissor/destinatário saíam `"alta"` mesmo errados e o número da nota, certo,
+saía `"baixa"`. Agora:
+- **Chave de acesso** com DV válido serve de evidência independente
+  (`danfe.partes_da_chave`: cUF, AAMM, CNPJ, modelo, série, nNF — layout
+  padronizado pela SEFAZ). O CNPJ lido junto do emissor bate com o CNPJ da
+  chave → `"alta"`; contradiz → `"baixa"` + aviso; sem chave válida →
+  `"media"`. O número da nota lido bate com o nNF da chave → `"alta"`;
+  contradiz → `"baixa"` + aviso.
+- Destinatário: `"alta"` quando o nome fica encaixado antes do CPF/CNPJ
+  (estrutura confirmada), `"media"` sem isso.
+
+**5. `valor_total` e grade de totais.** Na grade de totais o **valor vem
+ANTES do rótulo** (legenda por baixo da caixa: `"229,00"` na linha logo
+antes de `"VALOR TOTAL DA NOTA"`) — inverso do padrão "rótulo: valor". Cada
+linha vizinha a um rótulo dessa grade tem *algum* valor monetário (o campo
+anterior ou o seguinte), então `comum.extrair_valor_rotulo` tem o parâmetro
+`preferir_linha_anterior` (DANFE passa `True`; boleto usa o default
+`False`, ordem original já testada). O `valor_total` da DANFE sobrescreve o
+genérico (que exige `"R$"`, que a DANFE não imprime).
+
+**6. Datas.** O documento imprime `"15/4/2026"` (mês sem zero). `DATA_RE`
+aceita 1–2 dígitos e `comum.normalizar_data` devolve sempre `dd/mm/aaaa`
+(`"15/04/2026"`), em qualquer extrator (no boleto é no-op). O rótulo real é
+`"DATA DA EMISSÃO"` ("da", não "de"); as duas preposições estão em
+`generico.ROTULOS_DATA_EMISSAO`.
 
 #### Tabela de itens por coordenadas (`danfe_tabela.py`)
 
@@ -306,6 +333,20 @@ públicos — CNPJ de empresa, não dado pessoal).
   virava uma sequência de itens fantasmas. Corte por CONTEÚDO da linha em
   vez de posição vertical fixa porque a posição varia de layout pra
   layout — os títulos de seção, não.
+- **Fragmentos do cabeçalho abaixo dele** (`LIMITE_CABECALHO_MULTILINHA`):
+  células de cabeçalho com várias linhas ("ALÍQUOTA" / "ICMS" / "IPI"
+  empilhadas) saem como fragmentos soltos ("IC M S IP I") numa linha logo
+  ABAIXO do cabeçalho (top 416.7 contra 413.6 no PDF real — 3.1pt, acima
+  da tolerância de agrupamento, então é uma linha separada). Sem CÓDIGO e
+  sem ser só descrição, era classificada `"fim"` e encerrava a tabela
+  ANTES do primeiro item: `itens: []`. **Bug real corrigido.** Enquanto
+  nenhum item começou, linhas `"fim"` a até 15pt do cabeçalho são puladas
+  (`decisao: "pulada: fragmento do cabecalho..."` no `/debug/extractor-input`).
+  Depois do primeiro item, uma linha `"fim"` continua encerrando a tabela.
+  Verificado por mutação: com o limite em 0 o teste falha e a tabela sai
+  vazia. Nota: `"13,9718,00"` (VALOR I.P.I. + ALÍQUOTA ICMS colados) não
+  afeta o item — o schema só lê quantidade/valor unitário/valor total, de
+  outras colunas.
 - **Classificação de linha** (`_tipo_linha`): `"item"` exige conteúdo na
   coluna CÓDIGO (todo item de verdade tem código de produto — sinal mais
   confiável do que "tem algum número em alguma coluna", que rodapé/seção
@@ -438,16 +479,22 @@ real nenhuma).
 `tests/test_extractors_danfe.py` testa `DanfeExtractor` e
 `danfe_tabela.montar_tabela_itens` contra as fixtures reais em
 `tests/fixtures/danfe_*` (texto bruto + palavras posicionadas de uma DANFE
-real, destinatário fictício). O texto bruto preserva a ORDEM DE LINHAS
-exata que o pdfplumber produziu (via `/debug/extract-text`), não uma
-linearização "rótulo: valor" escrita à mão — isso importa porque a
-primeira versão da fixture era escrita à mão e não reproduziu nenhum dos
-bugs reais de emissor/destinatário/data_emissão/valor_total/itens
-fantasmas documentados em "Layout real de uma DANFE" acima, que só
-apareceram testando o PDF real no navegador. Cobre também os bugs de
-tabela já documentados (descarte de texto vertical, separação de valores
-colados, corte por bloco de informações complementares) e a validação de
-soma com aviso.
+real, destinatário fictício). **O texto bruto (`danfe_real_anonimizado.txt`)
+é um COMPOSTO de trechos reais, não as 84 linhas que o extrator recebe**:
+vem de `/debug/extractor-input` (linhas 00-02, 14-15, 38, 39-41, 51-52,
+75-76 — texto girado, emitente, destinatário colado, cabeçalho e produto) mais
+um trecho anterior (endereço/IE/CNPJ/chave/totais) com a adjacência entre
+blocos ASSUMIDA, e sem linha de número da nota. O docstring do teste diz
+isso; testes que montam texto à mão estão marcados `SINTETICO`. **Deve ser
+substituído pelas 84 linhas completas** quando disponíveis. Cobre também os
+bugs de tabela documentados (texto vertical, valores colados, corte por
+informações complementares, fragmentos do cabeçalho) e a validação de soma.
+
+`tests/test_debug_endpoints.py` garante que `/extract-document`,
+`/debug/extract-text` e `/debug/extractor-input` veem exatamente as mesmas
+linhas (ver "Diagnosticando um PDF real"). Chama as funções dos endpoints
+direto com um `UploadFile` montado na mão, porque `httpx` (TestClient) não
+está nas dependências.
 
 `tests/test_pdf_extractor.py` testa a orquestração digital->OCR com
 mocks (`monkeypatch` em `_tentar_ocr`/`_OCR_IMPORTADO`), então passa
@@ -481,6 +528,34 @@ posição x0/x1/top/bottom (`pagina.extract_words()`), sem extração em cima
 itens da DANFE) antes de escrever a lógica de reconstrução por
 coordenadas. Só funciona com texto digital (`paginas_palavras` é `None`
 quando a origem é OCR — retorna 400 nesse caso).
+
+### Diagnosticando um PDF real
+
+Regra do projeto: **nunca ajustar um extrator sem ter visto o texto exato
+que ele recebe.** Já custou 3 rodadas de correção por suposição (boleto e
+DANFE). O caminho:
+
+1. Rodar o PDF em `POST /debug/extractor-input` (`/docs` → "Try it out").
+   Devolve, por página, as linhas **numeradas** exatamente como o extrator
+   as vê (já SEM o texto girado descartado na leitura — o campo
+   `caracteres_girados_descartados` diz quantos caracteres foram); qual
+   extrator foi escolhido e as pontuações de cada um; o que ele
+   extraiu (`resultado.documento`, `confiancas`, `avisos`); e, pra DANFE,
+   `tabela_itens`: por página, se achou o cabeçalho da tabela, as âncoras de
+   coluna, e **cada linha examinada com a decisão** (`item`,
+   `continuacao`, `pulada: fragmento do cabecalho...`, `fim: ...`) — é o que responde "por que `itens` saiu
+   vazio/curto".
+2. Colar a saída anonimizada (trocar nome/CPF/endereço/telefone/e-mail por
+   fictícios **sem juntar nem separar linhas** — a estrutura de linhas é o
+   que importa) e reconstruir a fixture a partir dela.
+3. Só então ajustar o extrator.
+
+Todos os endpoints que leem PDF passam por `main._ler_pdf` e o contexto do
+extrator é montado por `basic_extractor.montar_contexto` — não há "outro
+jeito de ler" entre `/extract-document`, `/debug/extract-text` e
+`/debug/extractor-input` (`tests/test_debug_endpoints.py` garante).
+`exibicao_fiel_ao_texto_do_extrator` na resposta confere que a exibição por
+página bate com o texto que o extrator recebe.
 
 **Refatoração por padrão Strategy** (ver "Arquitetura de extratores"
 acima) — etapas 1, 2 e 3 do plano concluídas: extratores separados por

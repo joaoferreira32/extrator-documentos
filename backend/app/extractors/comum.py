@@ -315,4 +315,15 @@ def extrair_data(linhas: list[str], rotulos: list[str], todos_rotulos: list[str]
         return None
     _, bruto = encontrado
     m = DATA_RE.search(bruto)
-    return m.group(1) if m else None
+    return normalizar_data(m.group(1)) if m else None
+
+
+def normalizar_data(data: str) -> str:
+    """"15/4/2026" -> "15/04/2026" (dia e mes sempre com 2 digitos, mantendo
+    o separador original). DANFE real imprime o mes sem zero a esquerda;
+    normalizar aqui deixa o campo no mesmo formato em qualquer extrator."""
+    m = re.fullmatch(r"(\d{1,2})([/-])(\d{1,2})\2(\d{4})", data)
+    if not m:
+        return data
+    dia, separador, mes, ano = m.groups()
+    return f"{int(dia):02d}{separador}{int(mes):02d}{separador}{ano}"
