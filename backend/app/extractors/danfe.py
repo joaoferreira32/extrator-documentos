@@ -520,7 +520,10 @@ class DanfeExtractor(ExtratorDocumento):
             return
 
         resultado.documento.itens = tabela.itens
-        resultado.confiancas["itens"] = "media"  # heuristica posicional
+        # Heuristica posicional -> "media". Sobe pra "alta" abaixo SO quando a
+        # soma dos itens fecha com o Valor Total dos Produtos (evidencia
+        # independente: o total vem de outra parte do documento).
+        resultado.confiancas["itens"] = "media"
 
         if tabela.cfop_predominante:
             resultado.documento.campos_adicionais.append(
@@ -543,3 +546,8 @@ class DanfeExtractor(ExtratorDocumento):
                 f"o Valor Total dos Produtos informado (R$ {valor_total_produtos:.2f}) "
                 "-- confira a tabela manualmente."
             )
+        elif all(isinstance(item.valor_total, float) for item in tabela.itens):
+            # Todos os itens com total numerico E a soma bate: sem essa
+            # segunda condicao, um item sem total (contando como 0) poderia
+            # "fechar" a soma por acaso.
+            resultado.confiancas["itens"] = "alta"

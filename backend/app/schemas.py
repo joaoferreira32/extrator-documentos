@@ -49,5 +49,9 @@ class ExtractionResult(BaseModel):
     schema tambem e o output_format do modo IA (Structured Outputs da
     Anthropic), e a LLM nao tem uma nocao natural de confianca por
     campo."""
+    avisos: List[str] = []
+    """Os avisos, UM POR ITEM (ex: "soma dos itens nao bate", "fallback IA ->
+    basico"). E o que o frontend lista no banner. `aviso` (abaixo) e o mesmo
+    conteudo juntado numa string so, mantido por compatibilidade."""
     aviso: Optional[str] = None  # informativo, nao e erro (ex: PDF escaneado, fallback IA -> basico)
     documento: DocumentoExtraido

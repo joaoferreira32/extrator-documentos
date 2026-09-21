@@ -217,7 +217,8 @@ def test_danfe_completa():
     assert item.quantidade == 1.0
     assert item.valor_unitario == 215.03
     assert item.valor_total == 215.03
-    assert resultado.confiancas.get("itens") == "media"
+    # A soma dos itens (215,03) fecha com o Valor Total dos Produtos da grade.
+    assert resultado.confiancas.get("itens") == "alta"
 
     assert campos.get("CFOP") == "5102"
 
@@ -521,3 +522,34 @@ def test_danfe_nao_usa_a_linha_seguinte_pra_valores_de_rotulo():
     resultado = DanfeExtractor().extrair(_contexto())
     assert resultado.documento.valor_total == 229.0
     assert resultado.avisos == []
+
+
+def test_confianca_dos_itens_e_alta_so_quando_a_soma_fecha():
+    """A tabela por coordenada e heuristica posicional ("media"); vira "alta"
+    quando a soma dos itens fecha com o Valor Total dos Produtos."""
+    texto = FIXTURE_TEXTO.read_text(encoding="utf-8")
+    contexto_ok = ContextoExtracao(
+        texto=texto, linhas=texto.splitlines(), paginas_palavras=_carregar_paginas_palavras()
+    )
+    assert DanfeExtractor().extrair(contexto_ok).confiancas["itens"] == "alta"
+
+    # Soma NAO fecha (produtos 999,99 na grade): continua "media" e avisa.
+    divergente = texto.replace("229,00 41,22 0,00 0,00 215,03", "229,00 41,22 0,00 0,00 999,99")
+    contexto_div = ContextoExtracao(
+        texto=divergente, linhas=divergente.splitlines(), paginas_palavras=_carregar_paginas_palavras()
+    )
+    resultado = DanfeExtractor().extrair(contexto_div)
+    assert resultado.confiancas["itens"] == "media"
+    assert any("nao bate" in aviso for aviso in resultado.avisos)
+
+
+def test_confianca_dos_itens_fica_media_sem_valor_total_dos_produtos_pra_conferir():
+    """SINTETICO: sem "Valor Total dos Produtos" no texto nao ha com o que
+    conferir a soma -- nao sobe pra "alta"."""
+    texto = "DANFE" + chr(10) + "DELL COMPUTADORES" + chr(10)
+    contexto = ContextoExtracao(
+        texto=texto, linhas=texto.splitlines(), paginas_palavras=_carregar_paginas_palavras()
+    )
+    resultado = DanfeExtractor().extrair(contexto)
+    assert resultado.documento.itens  # a tabela foi lida
+    assert resultado.confiancas["itens"] == "media"

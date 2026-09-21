@@ -29,6 +29,7 @@ def _resultado_basico(resultado_texto, resultado_extracao, aviso_extra: str | No
         modo_extracao="basico",
         origem_texto=resultado_texto.origem,
         confiancas=resultado_extracao.confiancas,
+        avisos=avisos,
         aviso=" ".join(avisos) if avisos else None,
         documento=resultado_extracao.documento,
     )
@@ -81,6 +82,7 @@ async def extract_document(file: UploadFile):
         return ExtractionResult(
             modo_extracao="basico",
             origem_texto=resultado_texto.origem,
+            avisos=[aviso],
             aviso=aviso,
             documento=basic_extractor.extrair(""),
         )
