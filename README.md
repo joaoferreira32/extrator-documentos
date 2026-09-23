@@ -1,5 +1,9 @@
 # Extrator Inteligente de Documentos
 
+**[Demo online](https://extrator-docs.onrender.com)** — hospedada no plano gratuito
+do Render: se ninguém acessou nos últimos minutos, o serviço hiberna e a primeira
+visita pode demorar ~50s para responder enquanto ele acorda.
+
 Extrai automaticamente os dados de **notas fiscais (DANFE)** e **boletos bancários**
 em PDF — emissor, destinatário, valores, datas, itens — e gera uma planilha Excel
 pronta para conferência. Evita a digitação manual de documentos fiscais, com um
