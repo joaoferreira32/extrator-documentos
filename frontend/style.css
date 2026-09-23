@@ -125,6 +125,32 @@ body {
   padding: var(--space-12) clamp(1.25rem, 4vw, 3rem) var(--space-16);
 }
 
+/* Faixa fixa no topo: avisa que o app publico e uma demonstracao, sem dado
+   pessoal real. Full-bleed (fora do .page), sempre visivel. */
+.demo-publica {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  color: var(--color-warning);
+  background: var(--color-warning-bg);
+  border-bottom: 1px solid var(--color-warning-border);
+  text-align: center;
+}
+
+.demo-publica-icon {
+  width: 1.1rem;
+  height: 1.1rem;
+  flex-shrink: 0;
+}
+
+.demo-publica p {
+  margin: 0;
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
 /* ---------- Cabeçalho ---------- */
 
 .page-header {
