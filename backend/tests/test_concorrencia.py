@@ -108,30 +108,34 @@ def test_extracao_pesada_nao_bloqueia_o_health_check():
 
 def test_export_excel_grande_nao_bloqueia_o_health_check():
     """Mesmo bug, endpoint diferente: /export-excel tambem faz trabalho
-    pesado (montar o .xlsx) de forma sincrona. 20 mil itens e o bastante pra
-    o processamento demorar segundos (medido: 100 mil itens = 58s)."""
+    pesado (montar o .xlsx) de forma sincrona. Usa o MAIOR lote que os
+    tetos de app/schemas.py (item 2) ainda aceitam -- 5 documentos de 1000
+    itens cada, o teto de TETO_ITENS_TOTAL_DO_LOTE -- que ja demora ~3s
+    (medido), o bastante pra observar /health durante o processamento."""
     processo, url = helpers.iniciar_servidor()
     try:
-        documento = {
-            "arquivo": "grande.pdf",
-            "resultado": {
-                "modo_extracao": "basico",
-                "confiancas": {},
-                "avisos": [],
-                "documento": {
-                    "tipo_documento": "nota_fiscal",
-                    "numero_documento": "1",
-                    "itens": [
-                        {"descricao": f"Item {i}", "quantidade": 1.0, "valor_unitario": 1.0, "valor_total": 1.0}
-                        for i in range(20_000)
-                    ],
+        def documento(id_doc):
+            return {
+                "arquivo": f"grande_{id_doc}.pdf",
+                "resultado": {
+                    "modo_extracao": "basico",
+                    "confiancas": {},
+                    "avisos": [],
+                    "documento": {
+                        "tipo_documento": "nota_fiscal",
+                        "numero_documento": str(id_doc),
+                        "itens": [
+                            {"descricao": f"Item {i}", "quantidade": 1.0, "valor_unitario": 1.0, "valor_total": 1.0}
+                            for i in range(1000)
+                        ],
+                    },
                 },
-            },
-            "corrigidos": {},
-        }
+                "corrigidos": {},
+            }
+
         import json
 
-        payload = json.dumps({"documentos": [documento]}).encode()
+        payload = json.dumps({"documentos": [documento(i) for i in range(5)]}).encode()  # 5x1000 = 5000
 
         def exportar():
             req = urllib.request.Request(
