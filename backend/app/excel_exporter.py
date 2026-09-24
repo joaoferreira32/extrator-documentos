@@ -487,7 +487,15 @@ def _escrever_aba(ws, cabecalhos: list[str], linhas: list[list[Celula]], nome_ta
         ws.column_dimensions[get_column_letter(coluna)].width = min(max(maior + 2, LARGURA_MINIMA), LARGURA_MAXIMA)
 
     ws.freeze_panes = "B2"  # cabecalho E coluna ID congelados
-    ws.add_table(_tabela_sem_estilo_proprio(nome_tabela, f"A1:{get_column_letter(len(cabecalhos))}{max(len(linhas) + 1, 1)}"))
+    # So cria a Tabela quando ha pelo menos 1 linha de dados. Bug real: uma
+    # Tabela com ref so no cabecalho (aba vazia -- ex: Avisos de quase todo
+    # documento, Itens de boleto) e valida pelo schema, passa no openpyxl e no
+    # pandas, e o Excel de verdade recusa o arquivo e oferece "reparar",
+    # descartando a formatacao. O proprio Excel nunca grava tabela sem linha de
+    # dados. Aba sem dados fica sem Tabela (nao ha o que filtrar). Ver
+    # tests/ooxml.py.
+    if linhas:
+        ws.add_table(_tabela_sem_estilo_proprio(nome_tabela, f"A1:{get_column_letter(len(cabecalhos))}{len(linhas) + 1}"))
     ws.sheet_properties.tabColor = COR_CABECALHO_FUNDO
 
 
@@ -566,7 +574,9 @@ def _escrever_legenda(ws) -> None:
 
     for numero_linha, (estado, texto) in enumerate(LEGENDA_LINHAS, start=2):
         cor = FUNDOS[estado]
-        cel_cor = ws.cell(row=numero_linha, column=1, value="")
+        # sem value: value="" vira uma celula tipada como texto SEM texto
+        # (<c t="inlineStr"/> sem <is>), um estado que o Excel nao produz
+        cel_cor = ws.cell(row=numero_linha, column=1)
         cel_cor.fill = PatternFill("solid", start_color=cor, end_color=cor)
         cel_cor.border = _borda_padrao()
         cel_texto = ws.cell(row=numero_linha, column=2, value=texto)
