@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, UploadFile
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -50,7 +51,12 @@ async def _ler_pdf(file: UploadFile, limitar_tamanho: bool = False) -> pdf_extra
         raise HTTPException(status_code=400, detail="Arquivo maior que 20 MB.")
 
     try:
-        return pdf_extractor.extrair_texto(conteudo)
+        # run_in_threadpool: extrair_texto e sincrono e pode demorar segundos
+        # (PDF grande/muitas paginas). Chamar direto aqui bloquearia o event
+        # loop do asyncio INTEIRO -- travando ate o /health -- enquanto uma
+        # unica extracao roda. Bug real, medido com dois usuarios
+        # simultaneos (ver tests/test_concorrencia.py).
+        return await run_in_threadpool(pdf_extractor.extrair_texto, conteudo)
     except Exception:
         raise HTTPException(
             status_code=400,
@@ -89,7 +95,10 @@ async def extract_document(file: UploadFile):
 
     if config.ia_disponivel():
         try:
-            documento = llm_extractor.extrair(resultado_texto.texto)
+            # llm_extractor.extrair faz uma chamada de rede sincrona (SDK da
+            # Anthropic) -- mesma razao do run_in_threadpool acima: sem isso,
+            # o event loop fica bloqueado esperando a rede, nao so a CPU.
+            documento = await run_in_threadpool(llm_extractor.extrair, resultado_texto.texto)
             return ExtractionResult(
                 modo_extracao="ia", origem_texto=resultado_texto.origem, documento=documento
             )
@@ -97,8 +106,8 @@ async def extract_document(file: UploadFile):
             # Captura ampla e intencional: qualquer falha da IA (rede, auth,
             # rate limit, resposta fora do schema) deve cair para o modo
             # basico em vez de virar erro para quem esta usando o sistema.
-            resultado_extracao = basic_extractor.extrair_com_metadados(
-                resultado_texto.texto, resultado_texto.paginas_palavras
+            resultado_extracao = await run_in_threadpool(
+                basic_extractor.extrair_com_metadados, resultado_texto.texto, resultado_texto.paginas_palavras
             )
             return _resultado_basico(
                 resultado_texto,
@@ -109,8 +118,8 @@ async def extract_document(file: UploadFile):
                 ),
             )
 
-    resultado_extracao = basic_extractor.extrair_com_metadados(
-        resultado_texto.texto, resultado_texto.paginas_palavras
+    resultado_extracao = await run_in_threadpool(
+        basic_extractor.extrair_com_metadados, resultado_texto.texto, resultado_texto.paginas_palavras
     )
     return _resultado_basico(resultado_texto, resultado_extracao)
 
@@ -226,13 +235,16 @@ async def debug_extractor_input(file: UploadFile):
     tabela parou e por que?). Usa o mesmo caminho de /extract-document, so
     sem chamar a IA. Ver CLAUDE.md ("Diagnosticando um PDF real")."""
     resultado_texto = await _ler_pdf(file)
-    return montar_debug_entrada_do_extrator(resultado_texto)
+    return await run_in_threadpool(montar_debug_entrada_do_extrator, resultado_texto)
 
 
 @app.post("/export-excel")
 async def export_excel(requisicao: ExportarExcelRequest):
-    """Uma lista de documentos (a tela envia 1; a estrutura ja comporta lote)."""
-    buffer = excel_exporter.gerar_excel(requisicao.documentos)
+    """Uma lista de documentos (a tela envia 1; a estrutura ja comporta lote).
+    run_in_threadpool: montar o .xlsx e sincrono e, com muitos itens, pode
+    demorar dezenas de segundos -- mesma razao do _ler_pdf acima (ver
+    tests/test_concorrencia.py)."""
+    buffer = await run_in_threadpool(excel_exporter.gerar_excel, requisicao.documentos)
     nome = "documento_extraido.xlsx" if len(requisicao.documentos) == 1 else "documentos_extraidos.xlsx"
     return StreamingResponse(
         buffer,
