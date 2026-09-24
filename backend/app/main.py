@@ -36,18 +36,23 @@ def _resultado_basico(resultado_texto, resultado_extracao, aviso_extra: str | No
     )
 
 
-async def _ler_pdf(file: UploadFile, limitar_tamanho: bool = False) -> pdf_extractor.TextoExtraido:
+async def _ler_pdf(file: UploadFile) -> pdf_extractor.TextoExtraido:
     """Valida o upload e le o PDF. TODOS os endpoints que leem PDF passam
     por aqui (extract-document e os de debug), entao nao existe "outro
     jeito de ler" -- o que os endpoints de debug mostram e exatamente o
-    que o extrator recebe."""
+    que o extrator recebe.
+
+    O limite de tamanho vale pros 4 (nao so /extract-document): os 3
+    endpoints de debug sao publicos e ficaram SEM limite ate aqui -- um
+    PDF de 55 MB era processado normalmente neles mesmo depois do limite
+    ja existir em /extract-document. Bug real, medido."""
     if file.content_type != "application/pdf":
         raise HTTPException(status_code=400, detail="Envie um arquivo PDF.")
 
     conteudo = await file.read()
     if not conteudo:
         raise HTTPException(status_code=400, detail="Arquivo vazio.")
-    if limitar_tamanho and len(conteudo) > TAMANHO_MAXIMO_BYTES:
+    if len(conteudo) > TAMANHO_MAXIMO_BYTES:
         raise HTTPException(status_code=400, detail="Arquivo maior que 20 MB.")
 
     try:
@@ -71,7 +76,7 @@ def health():
 
 @app.post("/extract-document", response_model=ExtractionResult)
 async def extract_document(file: UploadFile):
-    resultado_texto = await _ler_pdf(file, limitar_tamanho=True)
+    resultado_texto = await _ler_pdf(file)
 
     if resultado_texto.parece_escaneado:
         if resultado_texto.ocr_disponivel:

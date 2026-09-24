@@ -56,7 +56,7 @@ def test_todos_os_caminhos_veem_as_mesmas_linhas():
     pdf = _pdf_duas_paginas()
 
     # Caminho de /extract-document: _ler_pdf -> montar_contexto.
-    lido = _rodar(main._ler_pdf(_upload(pdf), limitar_tamanho=True))
+    lido = _rodar(main._ler_pdf(_upload(pdf)))
     linhas_do_extrator = basic_extractor.montar_contexto(lido.texto, lido.paginas_palavras).linhas
 
     # /debug/extract-text
