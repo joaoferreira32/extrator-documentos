@@ -537,6 +537,18 @@ class DanfeExtractor(ExtratorDocumento):
         if valor_total_produtos is None:
             bruto = comum.extrair_valor_rotulo(contexto.texto, ROTULOS_VALOR_TOTAL_PRODUTOS)
             valor_total_produtos = comum.para_numero(bruto) if bruto else None
+
+        if isinstance(valor_total_produtos, float):
+            # Exposto como campo_adicional pra quem exporta pra Excel poder
+            # conferir a soma dos itens numero-contra-numero (aba Campos
+            # adicionais), em vez de so confiar no aviso de texto abaixo --
+            # antes desse campo, esse valor nunca aparecia em lugar nenhum
+            # do arquivo exportado, so era usado internamente pra gerar aviso.
+            resultado.documento.campos_adicionais.append(
+                CampoAdicional(campo="Valor Total dos Produtos", valor=comum.formatar_valor_br(valor_total_produtos))
+            )
+            resultado.confiancas["Valor Total dos Produtos"] = "alta"
+
         if not isinstance(valor_total_produtos, float) or tabela.soma_valor_total is None:
             return
 

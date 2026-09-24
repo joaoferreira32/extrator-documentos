@@ -222,6 +222,12 @@ def test_danfe_completa():
 
     assert campos.get("CFOP") == "5102"
 
+    # Valor Total dos Produtos exposto como campo_adicional (pra quem
+    # exporta pra Excel poder conferir a soma dos itens numero-contra-numero
+    # na aba Campos adicionais, sem depender so do texto do aviso).
+    assert campos.get("Valor Total dos Produtos") == "215,03"
+    assert resultado.confiancas.get("Valor Total dos Produtos") == "alta"
+
     # Soma dos itens (215,03) bate com "Valor Total dos Produtos" (215,03)
     # na fixture -- nao deve gerar aviso de divergencia.
     assert resultado.avisos == []
@@ -238,6 +244,11 @@ def test_soma_divergente_gera_aviso():
     )
     resultado = DanfeExtractor().extrair(contexto)
     assert any("nao bate" in aviso for aviso in resultado.avisos)
+    # o campo continua exposto mesmo quando diverge -- o valor "errado" (do
+    # jeito que veio no documento) e o que interessa mostrar, nao um valor
+    # corrigido por nos
+    campos = {c.campo: c.valor for c in resultado.documento.campos_adicionais}
+    assert campos.get("Valor Total dos Produtos") == "999,99"
 
 
 def test_montar_tabela_itens_descarta_texto_vertical():

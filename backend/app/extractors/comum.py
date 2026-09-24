@@ -78,6 +78,13 @@ def para_numero(bruto: str) -> float | str:
         return bruto.strip()
 
 
+def formatar_valor_br(valor: float) -> str:
+    """Inverso de para_numero: 1234.5 -> "1.234,50". Usado quando um valor
+    ja foi parseado como float (ex: de uma grade de totais) mas precisa
+    virar texto de novo pra entrar em campos_adicionais (que exige string)."""
+    return f"{valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+
 def contar_digitos(s: str) -> int:
     return sum(ch.isdigit() for ch in s)
 

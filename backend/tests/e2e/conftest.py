@@ -67,7 +67,9 @@ class Planilha:
 
     @property
     def itens(self):
-        return self.linhas("Itens")
+        # a aba Itens ganha uma linha de "Total" ao final quando ha item(ns)
+        # (etapa 7) -- ID vira o rotulo "Total" em vez de um inteiro
+        return [linha for linha in self.linhas("Itens") if isinstance(linha["ID"], int)]
 
     @property
     def campos(self):

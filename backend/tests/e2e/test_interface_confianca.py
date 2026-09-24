@@ -385,7 +385,7 @@ def test_excel_da_danfe_reflete_a_tela_e_tem_as_4_abas(tela):
     x_y = _x_de_y_da_tela(tela)
     planilha = tela.baixar_excel()
 
-    assert planilha.wb.sheetnames == ["Resumo", "Itens", "Campos adicionais", "Avisos"]
+    assert planilha.wb.sheetnames == ["Resumo", "Itens", "Campos adicionais", "Avisos", "Legenda"]
     r = planilha.resumo
     assert (r["ID"], r["Arquivo"], r["Documento"], r["Tipo"], r["Número"]) == (
         1, "danfe_ok.pdf", "Nota fiscal 000012345", "nota_fiscal", "000012345",
