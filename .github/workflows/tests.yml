@@ -1,0 +1,41 @@
+name: Testes
+
+# So a suite RAPIDA e sem dependencia de sistema roda aqui de proposito:
+# - Os 25 testes e2e (tests/e2e, Playwright/Chromium) precisam de navegador
+#   e sao opt-in (`pytest tests/e2e --e2e`) -- nao rodam aqui.
+# - O teste de OCR real (test_pdf_extractor.py) precisa do Tesseract
+#   instalado e se pula sozinho quando nao acha (_ocr_real_disponivel()) --
+#   nao precisa de nenhuma configuracao especial aqui.
+# - O validador da Microsoft (tests/test_ooxml.py, `--ooxml-sdk`) e
+#   Windows-only (usa .NET Framework via PowerShell) e tambem e opt-in --
+#   nao roda aqui. O verificador de invariantes do OOXML (tests/ooxml.py,
+#   sem flag nenhuma) roda normalmente, e puro Python.
+# Ou seja: `pytest tests` aqui e EXATAMENTE o mesmo comando de sempre, sem
+# flag nenhuma -- os testes que precisam de mais coisa ja sabem se pular.
+# "on" entre aspas: sem isso, parsers YAML 1.1 (ex: PyYAML) leem a chave
+# como o booleano True, nao a string "on" -- inofensivo pro proprio GitHub
+# Actions (trata "on" como palavra-chave especial de qualquer forma), mas
+# evita a ambiguidade.
+"on":
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - run: pip install -r requirements.txt
+
+      - run: pytest tests -v

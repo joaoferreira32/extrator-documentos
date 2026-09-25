@@ -1,5 +1,7 @@
 # Extrator Inteligente de Documentos
 
+[![Testes](https://github.com/joaoferreira32/extrator-documentos/actions/workflows/tests.yml/badge.svg)](https://github.com/joaoferreira32/extrator-documentos/actions/workflows/tests.yml)
+
 **[Demo online](https://extrator-docs.onrender.com)** — hospedada no plano gratuito
 do Render: se ninguém acessou nos últimos minutos, o serviço hiberna e a primeira
 visita pode demorar ~50s para responder enquanto ele acorda.
@@ -224,6 +226,11 @@ só em `localhost:8000`, sem CORS e sem CDN externo.
 - As heurísticas foram feitas para o formato comercial brasileiro, com datas em
   dd/mm/aaaa e valores em reais, e validadas com um boleto e uma DANFE reais. Outros
   layouts podem exigir ajustes.
+- Números de tempo de extração (medidos, ainda não publicados aqui) e o gargalo real
+  por trás deles: não é a extração em si, e sim rodar sem limite de concorrência.
+- Rate limit simples (por IP) nos endpoints de upload — a demo pública ainda não tem.
+- Um parágrafo de "decisões descartadas" na seção de Decisões técnicas (o que foi
+  cogitado e por que não entrou), além do que já existe (ex: linha de título mesclada).
 
 ## Autor
 
