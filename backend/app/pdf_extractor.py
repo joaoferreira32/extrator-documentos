@@ -19,10 +19,25 @@ from pathlib import Path
 from typing import Optional
 
 import pdfplumber
+from pdfminer.pdfdocument import PDFPasswordIncorrect
+from pdfplumber.utils.exceptions import PdfminerException
 
 from app.extractors.base import Palavra
 
 logger = logging.getLogger(__name__)
+
+
+class PDFProtegidoPorSenha(Exception):
+    """PDF com senha -- pdfplumber/pdfminer nao conseguem ler sem ela.
+    Excecao PROPRIA (nao PDFPasswordIncorrect do pdfminer direto) pra quem
+    chama (main.py) nao precisar saber de pdfminer -- so este modulo
+    conhece o detalhe de que essa causa especifica vem embrulhada dentro
+    de `pdfplumber.utils.exceptions.PdfminerException` (confirmado lendo o
+    traceback real: pdfplumber faz `raise PdfminerException(e)`, guardando
+    a excecao original em `.args[0]`, nao em `__cause__`). Bug real que
+    isso corrige: antes, PDF com senha caia no mesmo `except Exception`
+    generico de "arquivo corrompido" -- mensagem enganosa, o arquivo esta
+    perfeito, so precisa da senha."""
 
 try:
     import pymupdf
@@ -89,9 +104,23 @@ def extrair_texto(conteudo_pdf: bytes) -> TextoExtraido:
 
     Nao levanta excecao quando o PDF nao tem texto extraivel nem quando o
     OCR nao esta disponivel; quem chama deve checar `parece_escaneado` e
-    `ocr_disponivel` e decidir a mensagem.
+    `ocr_disponivel` e decidir a mensagem. Levanta `PDFProtegidoPorSenha`
+    especificamente quando o PDF tem senha (distinto de "corrompido" --
+    ver a excecao acima); qualquer outro erro de leitura continua
+    propagando como antes, pra quem chama decidir (hoje, "corrompido").
     """
-    with pdfplumber.open(BytesIO(conteudo_pdf)) as pdf:
+    try:
+        # PDFPasswordIncorrect e levantada AQUI (pdfplumber.open, ao
+        # parsear o documento), antes do corpo do "with" comecar -- por
+        # isso da pra isolar so a chamada de abertura, sem precisar
+        # envolver a leitura das paginas tambem.
+        pdf = pdfplumber.open(BytesIO(conteudo_pdf))
+    except PdfminerException as exc:
+        if exc.args and isinstance(exc.args[0], PDFPasswordIncorrect):
+            raise PDFProtegidoPorSenha() from exc
+        raise
+
+    with pdf:
         paginas_texto = []
         paginas_palavras = []
         girados_descartados = 0

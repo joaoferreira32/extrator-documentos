@@ -90,6 +90,13 @@ async def _ler_pdf(file: UploadFile) -> pdf_extractor.TextoExtraido:
         # unica extracao roda. Bug real, medido com dois usuarios
         # simultaneos (ver tests/test_concorrencia.py).
         return await run_in_threadpool(pdf_extractor.extrair_texto, conteudo)
+    except pdf_extractor.PDFProtegidoPorSenha:
+        # Bug real: antes caia no "corrompido" generico abaixo -- mensagem
+        # enganosa, o arquivo esta perfeito, so precisa da senha.
+        raise HTTPException(
+            status_code=400,
+            detail="Este PDF esta protegido por senha. Remova a senha e envie novamente.",
+        )
     except Exception:
         raise HTTPException(
             status_code=400,
@@ -140,6 +147,23 @@ def _logar_extracao(
 async def extract_document(file: UploadFile):
     inicio = time.perf_counter()
     resultado_texto = await _ler_pdf(file)
+
+    if resultado_texto.numero_paginas == 0:
+        # Bug real: sem este `if`, um PDF de 0 paginas caia no
+        # `parece_escaneado` abaixo (texto vazio e vazio, mesma condicao) e
+        # dizia "parece ser uma imagem escaneada" -- diagnostico errado,
+        # nao ha imagem nenhuma, nao ha pagina nenhuma pra ter.
+        aviso = "Este PDF nao tem nenhuma pagina."
+        resultado = ExtractionResult(
+            modo_extracao="basico",
+            origem_texto=resultado_texto.origem,
+            avisos=[aviso],
+            aviso=aviso,
+            documento=basic_extractor.extrair(""),
+        )
+        _logar_extracao(resultado_texto, resultado, (time.perf_counter() - inicio) * 1000, file.filename,
+                         {"sem_paginas": True})
+        return resultado
 
     if resultado_texto.parece_escaneado:
         if resultado_texto.ocr_disponivel:
