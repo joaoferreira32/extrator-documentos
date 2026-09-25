@@ -32,5 +32,14 @@ def extrair_com_metadados(texto: str, paginas_palavras=None) -> ResultadoExtraca
     return extrator.extrair(contexto)
 
 
+def nome_extrator(texto: str, paginas_palavras=None) -> str:
+    """So pra log/observabilidade (ver main._logar_extracao) -- refaz a
+    escolha do extrator (pontuacao_deteccao de cada um: regex/heuristica
+    sobre texto ja em memoria, nao reabre nem reparsa o PDF) em vez de
+    fazer `ResultadoExtracao` carregar isso pra sempre. Custo desprezivel
+    perto do resto da extracao."""
+    return type(extractors.selecionar_extrator(montar_contexto(texto, paginas_palavras))).__name__
+
+
 def extrair(texto: str) -> DocumentoExtraido:
     return extrair_com_metadados(texto).documento

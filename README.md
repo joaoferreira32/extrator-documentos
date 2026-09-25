@@ -23,12 +23,18 @@ indicador de confiança em cada campo extraído para o usuário saber o que revi
   validados pela fórmula da nota.
 - **Correção antes de exportar:** qualquer campo pode ser editado na tela; o Excel
   marca o que foi corrigido e guarda o valor original em comentário.
-- **Excel multi-aba com estrutura pronta para lote:** Resumo, Itens, Campos adicionais e Avisos,
-  com valores numéricos em R$, datas reais e chave de 44 dígitos preservada.
+- **Excel com aba de leitura e abas de dados:** um Relatório em blocos (por documento,
+  com hierarquia visual) ao lado de Documentos/Itens/Campos adicionais/Avisos (Tabelas
+  nomeadas, prontas pra Tabela Dinâmica/Power Query), valores em R$, datas reais e chave
+  de 44 dígitos preservada.
 - **Segurança e privacidade:** proteção contra injeção de fórmula no Excel;
   nenhum dado pessoal real no repositório nem no histórico do Git.
-- **150 testes:** unitários, regressão sobre um boleto e uma DANFE reais anonimizados
-  e 25 testes de interface num navegador real (Playwright).
+- **232 testes:** 199 rodam por padrão (unitários, regressão sobre um boleto e uma DANFE
+  reais anonimizados, e um verificador que lê o `.xlsx` gerado como XML bruto pra pegar
+  erro que o Excel rejeitaria mas o openpyxl não veria); mais 26 de interface num
+  navegador real (Playwright) e 7 que validam o Excel contra o SDK oficial da Microsoft.
+- **CI no GitHub Actions** a cada push, e log estruturado por extração (tempo, extrator
+  escolhido, campos vazios/de baixa confiança) com id de correlação por requisição.
 - **OCR opcional** (Tesseract) para PDFs escaneados.
 
 ## Stack
@@ -117,7 +123,7 @@ cd backend
 .venv\Scripts\python.exe -m pytest tests -v
 ```
 
-São 125 testes rodando por padrão, entre unitários e de regressão. Os de regressão usam
+São 199 testes rodando por padrão, entre unitários e de regressão. Os de regressão usam
 o texto bruto de um boleto e de trechos de uma DANFE reais, com os dados pessoais
 trocados por fictícios. Eles existem porque os cenários que escrevi à mão não
 reproduziam os bugs que apareciam no documento de verdade.
@@ -125,13 +131,24 @@ reproduziam os bugs que apareciam no documento de verdade.
 O teste de OCR real só roda se o Tesseract e o idioma português estiverem instalados.
 Sem eles, ele é pulado em vez de falhar. Os outros testes de OCR usam mocks.
 
-Há mais 25 testes de interface, que rodam num Chromium de verdade via Playwright com
+Toda vez que dou push (ou abro um PR), o [GitHub Actions](.github/workflows/tests.yml)
+roda esses 199 testes sozinho — é o badge que aparece no topo deste README.
+
+Há mais 26 testes de interface, que rodam num Chromium de verdade via Playwright com
 PDFs fictícios gerados na hora. Eles são opcionais e têm dependências à parte:
 
 ```powershell
 .venv\Scripts\python.exe -m pip install -r requirements-dev.txt
 .venv\Scripts\python.exe -m playwright install chromium
 .venv\Scripts\python.exe -m pytest tests\e2e --e2e -v
+```
+
+Tem também 7 testes que validam o `.xlsx` exportado contra o SDK oficial da Microsoft
+(Open XML), além do verificador próprio (que já roda nos 199 de sempre). São Windows-only
+e opcionais, porque baixam esse SDK na primeira vez:
+
+```powershell
+.venv\Scripts\python.exe -m pytest tests\test_ooxml.py --ooxml-sdk -v
 ```
 
 ## OCR (opcional)
@@ -213,6 +230,17 @@ como fórmula.
 
 **Frontend servido pelo próprio FastAPI**, em HTML, CSS e JavaScript puros. Um processo
 só em `localhost:8000`, sem CORS e sem CDN externo.
+
+**Trabalho pesado fora do event loop.** Ler o PDF, extrair os campos e montar o Excel são
+síncronos e podem levar segundos — chamados direto dentro de uma rota `async def`, eles
+bloqueariam o servidor inteiro (até o `/health`) enquanto uma única extração roda. Medido
+de propósito antes de corrigir: uma extração de 9s deixava outra pessoa esperando o tempo
+todo. `fastapi.concurrency.run_in_threadpool` resolve.
+
+**Log estruturado sem infraestrutura pesada.** Uma linha em JSON por extração (tempo,
+extrator escolhido, campos vazios ou de baixa confiança) e um id por requisição
+(`X-Request-ID` no cabeçalho da resposta, correlacionado à mesma linha do log) — só
+`logging` da biblioteca padrão, sem Sentry nem serviço pago.
 
 ## Limitações conhecidas e próximos passos
 

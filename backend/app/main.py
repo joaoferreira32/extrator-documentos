@@ -1,11 +1,18 @@
+import json
+import logging
+import time
+import uuid
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
 
-from app import basic_extractor, config, excel_exporter, extractors, llm_extractor, pdf_extractor
+from app import basic_extractor, config, excel_exporter, extractors, llm_extractor, logging_config, pdf_extractor
+from app.confianca import CAMPOS_OBRIGATORIOS, vazio
 from app.extractors.danfe import DanfeExtractor
 from app.extractors.danfe_tabela import montar_tabela_itens
 from app.schemas import ExportarExcelRequest, ExtractionResult
@@ -15,7 +22,28 @@ FRONTEND_DIR = BASE_DIR / "frontend"
 
 TAMANHO_MAXIMO_BYTES = 20 * 1024 * 1024  # 20 MB
 
+logging_config.configurar_logging()
+logger = logging.getLogger(__name__)
+
 app = FastAPI(title="Extrator Inteligente de Documentos")
+
+
+class RequestIdMiddleware(BaseHTTPMiddleware):
+    """Um id curto por requisicao, disponivel pra QUALQUER logger do projeto
+    via contextvar (ver app/logging_config.py) e devolvido no cabecalho
+    X-Request-ID -- pra correlacionar um erro que o usuario relatar com a
+    linha exata do log do servidor, sem precisar passar o id explicitamente
+    em cada chamada de funcao."""
+
+    async def dispatch(self, request: Request, call_next):
+        rid = uuid.uuid4().hex[:8]
+        logging_config.definir_id_da_requisicao(rid)
+        resposta = await call_next(request)
+        resposta.headers["X-Request-ID"] = rid
+        return resposta
+
+
+app.add_middleware(RequestIdMiddleware)
 
 
 def _resultado_basico(resultado_texto, resultado_extracao, aviso_extra: str | None = None) -> ExtractionResult:
@@ -74,8 +102,43 @@ def health():
     return {"status": "ok"}
 
 
+def _logar_extracao(
+    resultado_texto: pdf_extractor.TextoExtraido,
+    resultado: ExtractionResult,
+    duracao_ms: float,
+    arquivo: str | None,
+    extra: dict | None = None,
+) -> None:
+    """Uma linha de log por extracao, em JSON (grep + json.loads ja basta
+    pra analisar -- sem infraestrutura de log pesada, ver
+    app/logging_config.py). Cobre exatamente o que o diagnostico de
+    maturidade do projeto apontava como faltando: quanto tempo levou, qual
+    extrator foi escolhido (so faz sentido no modo basico -- no modo IA
+    quem decide e a LLM), e quais campos mais ficam vazios ou com confianca
+    baixa/media."""
+    dados = {
+        "arquivo": arquivo,
+        "duracao_ms": round(duracao_ms, 1),
+        "numero_paginas": resultado_texto.numero_paginas,
+        "origem_texto": resultado.origem_texto,
+        "modo_extracao": resultado.modo_extracao,
+    }
+    if resultado.confiancas:
+        dados["campos_media_ou_baixa"] = sorted(
+            chave for chave, nivel in resultado.confiancas.items() if nivel in ("media", "baixa")
+        )
+    obrigatorios = CAMPOS_OBRIGATORIOS.get(resultado.documento.tipo_documento, [])
+    campos_vazios = [c for c in obrigatorios if vazio(getattr(resultado.documento, c))]
+    if campos_vazios:
+        dados["campos_obrigatorios_vazios"] = campos_vazios
+    if extra:
+        dados.update(extra)
+    logger.info(json.dumps(dados, ensure_ascii=False))
+
+
 @app.post("/extract-document", response_model=ExtractionResult)
 async def extract_document(file: UploadFile):
+    inicio = time.perf_counter()
     resultado_texto = await _ler_pdf(file)
 
     if resultado_texto.parece_escaneado:
@@ -90,13 +153,16 @@ async def extract_document(file: UploadFile):
                 "disponivel neste momento (Tesseract nao encontrado no "
                 "sistema) -- veja o README para instalar."
             )
-        return ExtractionResult(
+        resultado = ExtractionResult(
             modo_extracao="basico",
             origem_texto=resultado_texto.origem,
             avisos=[aviso],
             aviso=aviso,
             documento=basic_extractor.extrair(""),
         )
+        _logar_extracao(resultado_texto, resultado, (time.perf_counter() - inicio) * 1000, file.filename,
+                         {"escaneado": True})
+        return resultado
 
     if config.ia_disponivel():
         try:
@@ -104,9 +170,11 @@ async def extract_document(file: UploadFile):
             # Anthropic) -- mesma razao do run_in_threadpool acima: sem isso,
             # o event loop fica bloqueado esperando a rede, nao so a CPU.
             documento = await run_in_threadpool(llm_extractor.extrair, resultado_texto.texto)
-            return ExtractionResult(
+            resultado = ExtractionResult(
                 modo_extracao="ia", origem_texto=resultado_texto.origem, documento=documento
             )
+            _logar_extracao(resultado_texto, resultado, (time.perf_counter() - inicio) * 1000, file.filename)
+            return resultado
         except Exception as exc:
             # Captura ampla e intencional: qualquer falha da IA (rede, auth,
             # rate limit, resposta fora do schema) deve cair para o modo
@@ -114,7 +182,7 @@ async def extract_document(file: UploadFile):
             resultado_extracao = await run_in_threadpool(
                 basic_extractor.extrair_com_metadados, resultado_texto.texto, resultado_texto.paginas_palavras
             )
-            return _resultado_basico(
+            resultado = _resultado_basico(
                 resultado_texto,
                 resultado_extracao,
                 aviso_extra=(
@@ -122,11 +190,23 @@ async def extract_document(file: UploadFile):
                     f"({type(exc).__name__}), usando modo basico."
                 ),
             )
+            nome_extrator = await run_in_threadpool(
+                basic_extractor.nome_extrator, resultado_texto.texto, resultado_texto.paginas_palavras
+            )
+            _logar_extracao(resultado_texto, resultado, (time.perf_counter() - inicio) * 1000, file.filename,
+                             {"extrator": nome_extrator, "fallback_ia": type(exc).__name__})
+            return resultado
 
     resultado_extracao = await run_in_threadpool(
         basic_extractor.extrair_com_metadados, resultado_texto.texto, resultado_texto.paginas_palavras
     )
-    return _resultado_basico(resultado_texto, resultado_extracao)
+    resultado = _resultado_basico(resultado_texto, resultado_extracao)
+    nome_extrator = await run_in_threadpool(
+        basic_extractor.nome_extrator, resultado_texto.texto, resultado_texto.paginas_palavras
+    )
+    _logar_extracao(resultado_texto, resultado, (time.perf_counter() - inicio) * 1000, file.filename,
+                     {"extrator": nome_extrator})
+    return resultado
 
 
 @app.post("/debug/extract-text")
