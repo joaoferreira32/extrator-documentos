@@ -32,6 +32,30 @@ def vazio(valor) -> bool:
     return valor is None or str(valor).strip() == ""
 
 
+# Campos OBRIGATORIOS por tipo de documento -- MESMA regra de
+# `script.js` (CAMPOS_OBRIGATORIOS/eObrigatorio). Duplicado aqui pela mesma
+# razao do resto deste modulo: o Excel (aba Relatorio) precisa saber quais
+# campos vazios sao "nao encontrado" (obrigatorio) e quais somem (opcional),
+# e o backend nao pode depender de logica que so existe no navegador. Um
+# teste e2e compara este dict com o da tela, entao as duas listas nao
+# divergem sem falhar.
+_OBRIGATORIOS_BASE = ["emissor", "destinatario", "numero_documento", "data_emissao", "valor_total"]
+CAMPOS_OBRIGATORIOS = {
+    "nota_fiscal": _OBRIGATORIOS_BASE,  # inclui DANFE
+    "boleto": [*_OBRIGATORIOS_BASE, "data_vencimento"],
+    "pedido_compra": _OBRIGATORIOS_BASE,
+    "relatorio": [],
+    "desconhecido": [],
+}
+
+
+def e_obrigatorio(tipo_documento: str, campo: str) -> bool:
+    """Tipo fora da lista (ex: o modo IA inventando um tipo) nao tem
+    obrigatorios -- mesmo comportamento de `(CAMPOS_OBRIGATORIOS[tipo] ||
+    []).includes(campo)` na tela."""
+    return campo in CAMPOS_OBRIGATORIOS.get(tipo_documento, [])
+
+
 def estado_do_campo(valor, chave: str, confiancas: dict, corrigidos) -> Optional[str]:
     """"corrigido" | "alta" | "media" | "baixa" | None (vazio ou sem confianca).
     Mesma ordem da tela: vazio -> corrigido -> confianca do backend."""

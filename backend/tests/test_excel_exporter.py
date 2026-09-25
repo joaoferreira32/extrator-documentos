@@ -18,6 +18,7 @@ from app.excel_exporter import (
     CABECALHOS_CAMPOS,
     CABECALHOS_ITENS,
     CABECALHOS_RESUMO,
+    COR_AUSENTE,
     COR_BORDA,
     COR_CABECALHO_FUNDO,
     COR_CABECALHO_TEXTO,
@@ -31,6 +32,8 @@ from app.excel_exporter import (
     LEGENDA_LINHAS,
     NOME_APLICATIVO,
     NOMES_TABELA,
+    TAMANHO_FONTE_APLICATIVO,
+    TAMANHO_FONTE_VALOR_PRINCIPAL,
     TAMANHO_FONTE_VALOR_TOTAL,
     gerar_excel,
     rotulo_documento,
@@ -44,23 +47,25 @@ from app.schemas import (
 )
 
 CHAVE_44 = "35260472381189001001550010000123451123456786"
+CHAVE_44_BLOCOS = " ".join(CHAVE_44[i:i + 4] for i in range(0, 44, 4))  # exibicao (Campos adicionais e Relatorio)
 
-# cabecalhos "reais" de cada aba -- usado pra distinguir a tabela de dados de
-# celulas fora dela (nota de geracao no Resumo, linha de total nos Itens).
-# Legenda tambem entra: seu cabecalho ("Cor"/"Significado") tambem precisa
-# ser a PRIMEIRA linha, sem excecao (ver test_nenhuma_aba_tem_linha_de_titulo...)
+# cabecalhos "reais" de cada aba de DADOS -- usado pra distinguir a tabela de
+# dados de celulas fora dela (nota de geracao em Documentos, linha de total
+# nos Itens). A aba Relatorio NAO entra aqui: nao e uma tabela (linha 1 e o
+# nome do aplicativo, nao um cabecalho de coluna) -- ver
+# test_nenhuma_aba_de_dados_tem_linha_de_titulo_mesclada_acima_do_cabecalho.
 _CABECALHOS_POR_ABA = {
-    "Resumo": CABECALHOS_RESUMO,
+    "Documentos": CABECALHOS_RESUMO,
     "Itens": CABECALHOS_ITENS,
     "Campos adicionais": CABECALHOS_CAMPOS,
     "Avisos": CABECALHOS_AVISOS,
-    "Legenda": ["Cor", "Significado"],
 }
 
-# as 4 abas de DADOS (com Tabela nomeada, filtro, guia colorida) -- Legenda
-# e so apoio estatico e nao entra nesses contratos, de proposito
-_ABAS_DE_DADOS = ["Resumo", "Itens", "Campos adicionais", "Avisos"]
-_SHEETNAMES_ESPERADOS = [*_ABAS_DE_DADOS, "Legenda"]
+# as 4 abas de DADOS (com Tabela nomeada, filtro, guia colorida, paisagem).
+# Relatorio e a 1a aba (etapa 9), de LEITURA -- nao entra nesses contratos de
+# proposito (retrato, sem Tabela, ver os testes especificos dela).
+_ABAS_DE_DADOS = ["Documentos", "Itens", "Campos adicionais", "Avisos"]
+_SHEETNAMES_ESPERADOS = ["Relatório", *_ABAS_DE_DADOS]
 
 
 def _doc(arquivo="a.pdf", confiancas=None, avisos=None, aviso=None, corrigidos=None, **documento):
@@ -103,15 +108,51 @@ def _linhas_sem_total(ws):
     return [linha for linha in _linhas(ws) if isinstance(linha["ID"], int)]
 
 
+def _linha_com_texto(ws, texto, coluna=2, a_partir_de=1):
+    """1a linha (a partir de `a_partir_de`) da aba Relatorio (rotulo/bloco
+    livre, nao tabular) cuja celula da `coluna` tem exatamente esse texto.
+    None se nao achar."""
+    for linha in range(a_partir_de, ws.max_row + 1):
+        if ws.cell(linha, coluna).value == texto:
+            return linha
+    return None
+
+
+def _valor_por_rotulo(ws, rotulo, a_partir_de=1):
+    """Celula de VALOR (coluna C, mesclada C:F) da 1a linha do Relatorio (a
+    partir de `a_partir_de`) cujo rotulo (coluna B) e esse -- usado pra
+    Emissor/Destinatario, onde os dois tem uma linha "Nome": passe a linha
+    do titulo da secao certa pra nao pegar a do bloco anterior."""
+    linha = _linha_com_texto(ws, rotulo, coluna=2, a_partir_de=a_partir_de)
+    assert linha is not None, f"rotulo {rotulo!r} nao encontrado no Relatorio (a partir da linha {a_partir_de})"
+    return ws.cell(linha, 3)
+
+
 # ---------- estrutura ----------
 
 
-def test_cinco_abas_sempre_presentes_na_ordem_mesmo_sem_itens_campos_e_avisos():
+def test_cinco_abas_sempre_presentes_na_ordem_relatorio_primeiro():
     wb, _ = _abrir(_doc(numero_documento="1"))
-    assert wb.sheetnames == _SHEETNAMES_ESPERADOS  # Legenda sempre por ultimo
+    assert wb.sheetnames == _SHEETNAMES_ESPERADOS  # Relatorio sempre primeiro (e a aba ativa)
+    assert wb.active.title == "Relatório"
     for nome in ("Itens", "Campos adicionais", "Avisos"):
         assert wb[nome].max_row == 1, f"{nome} sem dados deve ter so o cabecalho"
-    assert wb["Legenda"].max_row == len(LEGENDA_LINHAS) + 1  # Legenda tem conteudo fixo, sempre
+
+
+def test_aba_sem_nenhum_dado_fica_oculta_mas_continua_existindo():
+    """Estrutura estavel pra Power Query/formula (a aba existe, com o nome
+    de sempre) sem mostrar aba vazia pra quem abre no Excel."""
+    wb, _ = _abrir(_doc(numero_documento="1"))  # sem itens, campos ou avisos
+    for nome in ("Itens", "Campos adicionais", "Avisos"):
+        assert wb[nome].sheet_state == "hidden", f"{nome}: deveria ficar oculta quando vazia"
+    assert wb["Relatório"].sheet_state == "visible" and wb["Documentos"].sheet_state == "visible"
+
+
+def test_aba_com_dado_fica_visivel():
+    wb, _ = _abrir(_doc(numero_documento="1", itens=[{"descricao": "x"}],
+                        campos_adicionais=[{"campo": "CFOP", "valor": "5102"}], avisos=["a"]))
+    for nome in ("Itens", "Campos adicionais", "Avisos"):
+        assert wb[nome].sheet_state == "visible"
 
 
 def test_cabecalho_negrito_congelado_e_com_tabela_nomeada_em_todas_as_abas_de_dados():
@@ -136,7 +177,7 @@ def test_cabecalho_negrito_congelado_e_com_tabela_nomeada_em_todas_as_abas_de_da
 
 def test_estilo_visual_proprio_da_tabela_desligado_pra_nao_brigar_com_a_zebra():
     wb, _ = _abrir(_doc(numero_documento="1"))
-    tabela = wb["Resumo"].tables[NOMES_TABELA["Resumo"]]
+    tabela = wb["Documentos"].tables[NOMES_TABELA["Documentos"]]
     info = tabela.tableStyleInfo
     assert not any([info.showRowStripes, info.showColumnStripes, info.showFirstColumn, info.showLastColumn])
 
@@ -147,7 +188,7 @@ def test_toda_aba_de_dados_tem_id_sequencial_e_documento_legivel():
     for nome_aba in _ABAS_DE_DADOS:
         ws = wb[nome_aba]
         cabecalho = [c.value for c in ws[1]]
-        assert cabecalho[:2] == ["ID", "Documento"] or (ws.title == "Resumo" and cabecalho[:3] == ["ID", "Arquivo", "Documento"])
+        assert cabecalho[:2] == ["ID", "Documento"] or (ws.title == "Documentos" and cabecalho[:3] == ["ID", "Arquivo", "Documento"])
         linha = _linhas(ws)[0]
         assert linha["ID"] == 1 and linha["Documento"] == "Nota fiscal 000012345"
 
@@ -159,7 +200,7 @@ def test_lote_de_dois_documentos_ids_documentos_e_linhas_ligados_pelo_id():
               itens=[{"descricao": "c"}], campos_adicionais=[{"campo": "Parcela", "valor": "1/2"}])
     wb, _ = _abrir(d1, d2)
 
-    resumo = _linhas(wb["Resumo"])
+    resumo = _linhas(wb["Documentos"])
     assert [(r["ID"], r["Arquivo"], r["Documento"]) for r in resumo] == [
         (1, "um.pdf", "Nota fiscal 1"), (2, "dois.pdf", "Boleto 1"),
     ]
@@ -175,12 +216,12 @@ def test_rotulo_documento_com_e_sem_numero():
     assert rotulo_documento("tipo_inventado", "9", None) == "tipo_inventado 9"
 
 
-# ---------- Resumo ----------
+# ---------- Documentos ----------
 
 
 def test_emissor_e_destinatario_sem_o_documento_entre_parenteses_e_em_colunas_proprias():
     wb, _ = _abrir(_doc(emissor="DELL LTDA (CNPJ 72.381.189/0010-01)", destinatario="FULANO DE TAL (CPF 000.000.000-00)"))
-    r = _linhas(wb["Resumo"])[0]
+    r = _linhas(wb["Documentos"])[0]
     assert r["Emissor"] == "DELL LTDA" and r["Emissor CNPJ/CPF"] == "72.381.189/0010-01"
     assert r["Destinatário"] == "FULANO DE TAL" and r["Destinatário CNPJ/CPF"] == "000.000.000-00"
 
@@ -201,7 +242,7 @@ def test_separar_documento_fiscal(entrada, esperado):
 
 def test_numero_do_documento_fica_texto_e_preserva_zeros_a_esquerda():
     wb, _ = _abrir(_doc(numero_documento="000012345"))
-    celula = _celula(wb["Resumo"], "Número")
+    celula = _celula(wb["Documentos"], "Número")
     assert celula.value == "000012345" and celula.data_type == "s"
 
 
@@ -210,7 +251,7 @@ def test_datas_viram_data_de_verdade_e_o_que_nao_converte_fica_texto():
         _doc(data_emissao="15/04/2026", data_vencimento="2026-05-01"),
         _doc(data_emissao="31/02/2026", data_vencimento="quando der"),
     )
-    ws = wb["Resumo"]
+    ws = wb["Documentos"]
     emissao, vencimento = _celula(ws, "Data de emissão", 2), _celula(ws, "Data de vencimento", 2)
     assert isinstance(emissao.value, datetime) and emissao.value.date() == date(2026, 4, 15)
     assert emissao.number_format == FORMATO_DATA and emissao.is_date
@@ -222,7 +263,7 @@ def test_datas_viram_data_de_verdade_e_o_que_nao_converte_fica_texto():
 
 def test_valor_total_float_vira_numero_em_moeda_e_string_fica_texto():
     wb, _ = _abrir(_doc(valor_total=1234.5), _doc(valor_total="a combinar"))
-    ws = wb["Resumo"]
+    ws = wb["Documentos"]
     numero = _celula(ws, "Valor total", 2)
     assert numero.value == 1234.5 and numero.number_format == FORMATO_MOEDA and numero.data_type == "n"
     assert _celula(ws, "Valor total", 3).value == "a combinar"
@@ -239,13 +280,13 @@ def test_tipo_no_resumo_e_o_valor_interno_e_a_confianca_geral_segue_a_regra_da_t
     d = _doc(numero_documento="1", emissor="E (CNPJ 1)", valor_total=10.0,
              campos_adicionais=[{"campo": "CFOP", "valor": "5102"}],
              confiancas={"numero_documento": "alta", "emissor": "alta", "valor_total": "media", "CFOP": "media"})
-    r = _linhas(_abrir(d)[0]["Resumo"])[0]
+    r = _linhas(_abrir(d)[0]["Documentos"])[0]
     assert r["Tipo"] == "nota_fiscal"  # interno (bom pra filtrar), nao "Nota fiscal"
     assert r["Confiança geral"] == "2 de 4 alta"
 
 
 def test_confianca_geral_no_modo_ia_e_traco():
-    r = _linhas(_abrir(_doc(numero_documento="1"))[0]["Resumo"])[0]
+    r = _linhas(_abrir(_doc(numero_documento="1"))[0]["Documentos"])[0]
     assert r["Confiança geral"] == "—"
 
 
@@ -253,7 +294,7 @@ def test_confianca_geral_deixa_os_corrigidos_fora_do_x_de_y():
     d = _doc(numero_documento="1", emissor="E", valor_total=10.0,
              confiancas={"numero_documento": "alta", "emissor": "alta", "valor_total": "alta"},
              corrigidos={"emissor": "outro"})
-    assert _linhas(_abrir(d)[0]["Resumo"])[0]["Confiança geral"] == "2 de 2 alta"
+    assert _linhas(_abrir(d)[0]["Documentos"])[0]["Confiança geral"] == "2 de 2 alta"
 
 
 # ---------- Campos adicionais ----------
@@ -273,8 +314,9 @@ def test_campos_monetarios_viram_numero_e_codigos_ficam_texto():
     assert por_campo["Valor do Documento"].value == 1000.0 and por_campo["Valor do Documento"].number_format == FORMATO_MOEDA
     assert por_campo["Desconto"].value == 100.0
     assert por_campo["Valor a Pagar"].value == "sem valor"
-    # 44 digitos: como numero o Excel guardaria so 15 de precisao -- tem que ser texto INTEIRO
-    assert por_campo["Chave de Acesso"].value == CHAVE_44 and por_campo["Chave de Acesso"].data_type == "s"
+    # 44 digitos: como numero o Excel guardaria so 15 de precisao -- tem que ser texto INTEIRO.
+    # Em blocos de 4 (mesma exibicao da tela e do Relatorio, ver _formatar_chave_acesso).
+    assert por_campo["Chave de Acesso"].value == CHAVE_44_BLOCOS and por_campo["Chave de Acesso"].data_type == "s"
     assert por_campo["Nosso Número"].value == "10200000001-9"
     assert por_campo["CFOP"].value == "5102" and por_campo["CFOP"].data_type == "s"
 
@@ -322,7 +364,7 @@ def test_fundo_e_comentario_para_media_baixa_e_corrigido():
              valor_total=10.0,
              confiancas={"numero_documento": "alta", "data_emissao": "media", "emissor": "baixa", "valor_total": "alta"},
              corrigidos={"valor_total": 9.0})
-    ws = _abrir(d)[0]["Resumo"]
+    ws = _abrir(d)[0]["Documentos"]
 
     assert _fundo(_celula(ws, "Número")) is None and _celula(ws, "Número").comment is None  # alta: sem destaque
     data = _celula(ws, "Data de emissão")
@@ -337,7 +379,7 @@ def test_fundo_e_comentario_para_media_baixa_e_corrigido():
 
 def test_corrigido_para_vazio_ainda_e_marcado_com_o_valor_original():
     d = _doc(numero_documento=None, corrigidos={"numero_documento": "000012345"})
-    celula = _celula(_abrir(d)[0]["Resumo"], "Número")
+    celula = _celula(_abrir(d)[0]["Documentos"], "Número")
     assert celula.value is None and _fundo(celula) == "E7F0EF"
     assert "000012345" in celula.comment.text
 
@@ -352,7 +394,7 @@ def test_confianca_media_da_tabela_de_itens_pinta_as_linhas_com_um_comentario_so
 
 
 def test_modo_ia_nao_pinta_nada():
-    ws = _abrir(_doc(numero_documento="1", valor_total=1.0))[0]["Resumo"]
+    ws = _abrir(_doc(numero_documento="1", valor_total=1.0))[0]["Documentos"]
     assert all(_fundo(c) is None for c in ws[2])
 
 
@@ -361,7 +403,7 @@ def test_modo_ia_nao_pinta_nada():
 
 def test_cabecalho_fundo_escuro_texto_branco_negrito_e_linha_mais_alta():
     wb, _ = _abrir(_doc(numero_documento="1"))
-    ws = wb["Resumo"]
+    ws = wb["Documentos"]
     cabecalho = ws.cell(1, 1)
     assert _fundo(cabecalho) == COR_CABECALHO_FUNDO
     assert cabecalho.font.color.rgb[-6:] == COR_CABECALHO_TEXTO
@@ -371,7 +413,7 @@ def test_cabecalho_fundo_escuro_texto_branco_negrito_e_linha_mais_alta():
 
 def test_bordas_finas_em_toda_celula_cabecalho_e_dado():
     wb, _ = _abrir(_doc(numero_documento="1"))
-    ws = wb["Resumo"]
+    ws = wb["Documentos"]
     for celula in (ws.cell(1, 1), ws.cell(2, 1)):
         for lado in (celula.border.left, celula.border.right, celula.border.top, celula.border.bottom):
             assert lado.style == "thin" and lado.color.rgb[-6:] == COR_BORDA
@@ -379,7 +421,7 @@ def test_bordas_finas_em_toda_celula_cabecalho_e_dado():
 
 def test_alinhamento_por_tipo_texto_esquerda_numero_e_data_a_direita_com_recuo():
     wb, _ = _abrir(_doc(numero_documento="000123", data_emissao="15/04/2026", valor_total=10.0))
-    ws = wb["Resumo"]
+    ws = wb["Documentos"]
     texto, numero, data = _celula(ws, "Número"), _celula(ws, "Valor total"), _celula(ws, "Data de emissão")
     assert texto.alignment.horizontal == "left" and texto.alignment.indent == 1
     assert numero.alignment.horizontal == "right" and numero.alignment.indent == 1
@@ -392,7 +434,7 @@ def test_zebra_alterna_por_linha_e_destaque_de_confianca_sempre_vence():
     d3 = _doc(numero_documento="3", emissor="C")
     d4 = _doc(numero_documento="4", emissor="D")
     wb, _ = _abrir(d1, d2, d3, d4)
-    ws = wb["Resumo"]
+    ws = wb["Documentos"]
     assert _fundo(_celula(ws, "Número", 2)) is None  # 1a linha de dado: sem zebra
     assert _fundo(_celula(ws, "Número", 3)) == COR_ZEBRA  # 2a linha: zebra
     assert _fundo(_celula(ws, "Emissor", 3)) == "FBECEB"  # mesma linha, mas confianca baixa VENCE a zebra
@@ -402,7 +444,7 @@ def test_zebra_alterna_por_linha_e_destaque_de_confianca_sempre_vence():
 
 def test_valor_total_do_resumo_em_destaque_negrito_maior_e_com_cor():
     wb, _ = _abrir(_doc(numero_documento="1", valor_total=229.0))
-    celula = _celula(wb["Resumo"], "Valor total")
+    celula = _celula(wb["Documentos"], "Valor total")
     assert celula.font.bold and celula.font.size == TAMANHO_FONTE_VALOR_TOTAL
     assert celula.font.color.rgb[-6:] == COR_DESTAQUE_VALOR_TOTAL
     assert not celula.font.italic
@@ -410,17 +452,15 @@ def test_valor_total_do_resumo_em_destaque_negrito_maior_e_com_cor():
 
 def test_valor_total_em_destaque_continua_com_fundo_e_italico_quando_corrigido():
     d = _doc(numero_documento="1", valor_total=229.0, corrigidos={"valor_total": 200.0})
-    celula = _celula(_abrir(d)[0]["Resumo"], "Valor total")
+    celula = _celula(_abrir(d)[0]["Documentos"], "Valor total")
     assert celula.font.bold and celula.font.italic  # destaque + marca de corrigido, os dois juntos
     assert _fundo(celula) == "E7F0EF"  # continua com o fundo de "corrigido"
 
 
-def test_guia_das_4_abas_de_dados_colorida_igual_ao_cabecalho_legenda_fica_neutra():
+def test_guia_de_todas_as_abas_colorida_igual_ao_cabecalho():
     wb, _ = _abrir(_doc(numero_documento="1"))
-    for nome_aba in _ABAS_DE_DADOS:
+    for nome_aba in ["Relatório", *_ABAS_DE_DADOS]:
         assert wb[nome_aba].sheet_properties.tabColor.rgb[-6:] == COR_CABECALHO_FUNDO
-    # Legenda fica sem cor de proposito: sinaliza "isto e apoio, nao dado"
-    assert wb["Legenda"].sheet_properties.tabColor is None
 
 
 def test_linha_de_total_soma_quantidade_e_valor_total_ignorando_texto():
@@ -451,26 +491,28 @@ def test_linha_de_total_ausente_quando_a_aba_itens_nao_tem_nenhum_item():
 
 def test_nota_de_geracao_no_resumo_fora_da_tabela_e_do_filtro():
     buffer = gerar_excel([_doc(numero_documento="1")], data_geracao=date(2026, 9, 23))
-    ws = openpyxl.load_workbook(buffer)["Resumo"]
+    ws = openpyxl.load_workbook(buffer)["Documentos"]
     coluna_nota = len(CABECALHOS_RESUMO) + 2
     celula = ws.cell(1, coluna_nota)
     assert celula.value == "Gerado em 23/09/2026" and celula.font.italic
     # fora da Tabela e das colunas reais (ver docstring do modulo)
     ultima_coluna_tabela = openpyxl.utils.get_column_letter(len(CABECALHOS_RESUMO))
-    assert ws.tables[NOMES_TABELA["Resumo"]].ref == f"A1:{ultima_coluna_tabela}2"
+    assert ws.tables[NOMES_TABELA["Documentos"]].ref == f"A1:{ultima_coluna_tabela}2"
 
 
-def test_nenhuma_aba_tem_linha_de_titulo_mesclada_acima_do_cabecalho():
+def test_nenhuma_aba_de_dados_tem_linha_de_titulo_mesclada_acima_do_cabecalho():
     """Decisao documentada no modulo: uma linha de titulo mesclada acima do
     cabecalho foi cogitada e DESCARTADA (testado com pandas.read_excel
     simulando um leitor automatico tipo Power Query -- ver o commit que
     trouxe a identidade visual) porque corrompe a leitura de quem assume
     "linha 1 = cabecalho". O cabecalho tem que continuar sendo a primeira
-    linha de toda aba, sem excecao."""
+    linha de toda aba de DADOS, sem excecao. (A aba Relatorio fica de fora
+    de proposito: nao e uma tabela, a linha 1 e o nome do aplicativo.)"""
     wb, _ = _abrir(_doc(numero_documento="1", itens=[{"descricao": "x"}],
                         campos_adicionais=[{"campo": "CFOP", "valor": "5102"}], avisos=["a"]))
-    for ws in wb:
-        cabecalhos_esperados = _CABECALHOS_POR_ABA[ws.title]
+    for nome_aba in _ABAS_DE_DADOS:
+        ws = wb[nome_aba]
+        cabecalhos_esperados = _CABECALHOS_POR_ABA[nome_aba]
         assert [ws.cell(1, c).value for c in range(1, len(cabecalhos_esperados) + 1)] == cabecalhos_esperados
         assert ws.merged_cells.ranges == [] or all(r.min_row > 1 for r in ws.merged_cells.ranges)
 
@@ -489,37 +531,37 @@ def test_metadados_do_arquivo_autor_e_o_aplicativo_nunca_uma_pessoa():
 
 def test_impressao_area_cabecalho_repetido_paisagem_e_ajuste_de_escala():
     wb, _ = _abrir(_doc(numero_documento="1", itens=[{"descricao": "x", "valor_total": 1.0}]))
-    for nome_aba in [*_ABAS_DE_DADOS, "Legenda"]:
+    for nome_aba in _ABAS_DE_DADOS:
         ws = wb[nome_aba]
         assert ws.print_title_rows == "$1:$1", f"{nome_aba}: cabecalho repetido"
         assert ws.page_setup.orientation == "landscape", f"{nome_aba}: paisagem"
         assert ws.page_setup.fitToWidth == 1 and ws.page_setup.fitToHeight == 0, f"{nome_aba}: ajuste na largura"
         assert ws.sheet_properties.pageSetUpPr.fitToPage is True, f"{nome_aba}: fitToPage precisa estar ligado"
-    # area de impressao do Resumo NAO inclui a nota de geracao (2 colunas a mais)
+    # area de impressao de Documentos NAO inclui a nota de geracao (2 colunas a mais)
     ultima_resumo = get_column_letter(len(CABECALHOS_RESUMO))
-    assert wb["Resumo"].print_area == f"'Resumo'!$A$1:${ultima_resumo}$2"
+    assert wb["Documentos"].print_area == f"'Documentos'!$A$1:${ultima_resumo}$2"
     # a de Itens INCLUI a linha de total (e conteudo de leitura, so nao entra na Tabela/filtro)
     ws_itens = wb["Itens"]
     ultima_itens = get_column_letter(len(CABECALHOS_ITENS))
     assert ws_itens.print_area == f"'Itens'!$A$1:${ultima_itens}${ws_itens.max_row}"
 
 
-def test_aba_legenda_tem_as_3_cores_de_verdade_e_fica_sempre_igual():
-    wb, _ = _abrir(_doc(numero_documento="1"))
-    ws = wb["Legenda"]
-    assert [c.value for c in ws[1]] == ["Cor", "Significado"]
-    for i, (estado, texto) in enumerate(LEGENDA_LINHAS, start=2):
-        assert _fundo(ws.cell(i, 1)) == FUNDOS[estado]
-        assert ws.cell(i, 2).value == texto
-    # a linha "corrigido" tambem mostra o italico usado nas celulas corrigidas de verdade
-    assert ws.cell(1 + [e for e, _ in LEGENDA_LINHAS].index("corrigido") + 1, 2).font.italic
+def test_impressao_do_relatorio_e_retrato_sem_cabecalho_repetido():
+    """Relatorio nao e tabela -- retrato (layout estreito), sem
+    print_title_rows (nao ha cabecalho de coluna pra repetir), mas continua
+    com ajuste de escala na largura, igual as outras abas."""
+    ws = _abrir(_doc(numero_documento="1"))[0]["Relatório"]
+    assert ws.page_setup.orientation == "portrait"
+    assert ws.page_setup.fitToWidth == 1 and ws.page_setup.fitToHeight == 0
+    assert ws.sheet_properties.pageSetUpPr.fitToPage is True
+    assert ws.print_title_rows is None
 
 
 def test_documento_com_aviso_ganha_comentario_no_resumo_apontando_pra_aba_avisos():
     com_aviso = _doc(numero_documento="1", avisos=["a soma nao bate", "outro aviso"])
     sem_aviso = _doc(numero_documento="2")
     wb, _ = _abrir(com_aviso, sem_aviso)
-    ws = wb["Resumo"]
+    ws = wb["Documentos"]
     doc1 = _celula(ws, "Documento", 2)
     doc2 = _celula(ws, "Documento", 3)
     assert doc1.comment is not None and "2 avisos" in doc1.comment.text and "Avisos" in doc1.comment.text
@@ -568,15 +610,17 @@ def test_nenhum_dado_do_documento_vaza_pra_fora_das_abas():
         partes_sem_dado = {n for n in nomes if n.endswith((".xml", ".rels")) and n not in partes_com_dado}
         assert partes_sem_dado  # a checagem abaixo nao pode ficar vazia por engano
 
-        termos_sensiveis = ["FULANO", "SECRETO", "CICRANO", sensivel, CHAVE_44]
+        # a chave nunca deveria vazar nem no formato bruto nem no formatado (blocos de 4)
+        termos_sensiveis = ["FULANO", "SECRETO", "CICRANO", sensivel, CHAVE_44, CHAVE_44_BLOCOS]
         for nome in partes_sem_dado:
             conteudo = zf.read(nome).decode("utf-8", errors="replace")
             for termo in termos_sensiveis:
                 assert termo not in conteudo, f"{nome}: contem dado do documento ({termo!r}) fora das abas"
 
-        # sanidade: os termos de fato aparecem em algum lugar (senao o teste seria vazio)
+        # sanidade: os termos de fato aparecem em algum lugar (senao o teste seria vazio) --
+        # a chave em si so aparece FORMATADA (Campos adicionais e Relatorio), nunca crua
         conteudo_dados = "".join(zf.read(n).decode("utf-8", errors="replace") for n in partes_com_dado)
-        for termo in termos_sensiveis:
+        for termo in ["FULANO", "SECRETO", "CICRANO", sensivel, CHAVE_44_BLOCOS]:
             assert termo in conteudo_dados
 
 
@@ -594,6 +638,156 @@ def test_descricao_longa_nao_fixa_altura_de_linha_wrap_faz_o_resto():
     assert linha_dado.height is None or linha_dado.customHeight in (None, False)
 
 
+# ---------- Relatorio (etapa 9) ----------
+
+
+def test_relatorio_e_a_aba_ativa_com_nome_do_sistema_e_data():
+    buffer = gerar_excel([_doc(numero_documento="1")], data_geracao=date(2026, 9, 24))
+    wb = openpyxl.load_workbook(buffer)
+    assert wb.active.title == "Relatório"
+    ws = wb["Relatório"]
+    assert ws.cell(1, 2).value == NOME_APLICATIVO
+    assert ws.cell(1, 2).font.bold and ws.cell(1, 2).font.size == TAMANHO_FONTE_APLICATIVO
+    assert "24/09/2026" in ws.cell(2, 2).value
+
+
+def test_relatorio_titulo_do_documento_com_arquivo_modo_e_origem():
+    d = _doc(arquivo="nota.pdf", numero_documento="000012345")
+    ws = _abrir(d)[0]["Relatório"]
+    linha = _linha_com_texto(ws, "Nota fiscal 000012345")
+    assert linha is not None
+    subtitulo = ws.cell(linha + 1, 2).value
+    assert "nota.pdf" in subtitulo and "Modo básico" in subtitulo and "Texto digital" in subtitulo
+
+
+def test_relatorio_campo_obrigatorio_vazio_mostra_nao_encontrado():
+    d = _doc(tipo_documento="boleto", numero_documento=None, data_vencimento=None)  # os dois obrigatorios p/ boleto
+    ws = _abrir(d)[0]["Relatório"]
+    for rotulo in ("Número", "Data de vencimento"):
+        celula = _valor_por_rotulo(ws, rotulo)
+        assert celula.value == "não encontrado"
+        assert celula.font.italic and celula.font.color.rgb[-6:] == COR_AUSENTE
+
+
+def test_relatorio_campo_opcional_vazio_some_a_linha_inteira():
+    d = _doc(tipo_documento="relatorio", numero_documento=None)  # tipo "relatorio": nada e obrigatorio
+    ws = _abrir(d)[0]["Relatório"]
+    assert _linha_com_texto(ws, "Número") is None
+
+
+def test_relatorio_destaque_de_confianca_com_fundo_e_comentario_no_valor():
+    d = _doc(numero_documento="1", emissor="E (CNPJ 11.222.333/0001-81)", confiancas={"emissor": "baixa"})
+    ws = _abrir(d)[0]["Relatório"]
+    linha_secao = _linha_com_texto(ws, "EMISSOR")
+    celula = _valor_por_rotulo(ws, "Nome", a_partir_de=linha_secao)
+    assert _fundo(celula) == "FBECEB" and celula.comment is not None and "baixa" in celula.comment.text
+
+
+def test_relatorio_valor_total_em_fonte_grande_na_cor_de_destaque():
+    ws = _abrir(_doc(numero_documento="1", valor_total=229.0))[0]["Relatório"]
+    celula = _valor_por_rotulo(ws, "Valor total")
+    assert celula.value == 229.0 and celula.number_format == FORMATO_MOEDA
+    assert celula.font.bold and celula.font.size == TAMANHO_FONTE_VALOR_PRINCIPAL
+    assert celula.font.color.rgb[-6:] == COR_DESTAQUE_VALOR_TOTAL
+
+
+def test_relatorio_chave_de_acesso_em_blocos_de_4_digitos():
+    d = _doc(campos_adicionais=[{"campo": "Chave de Acesso", "valor": CHAVE_44}])
+    ws = _abrir(d)[0]["Relatório"]
+    celula = _valor_por_rotulo(ws, "Chave de Acesso")
+    assert celula.value == CHAVE_44_BLOCOS
+
+
+def test_relatorio_valor_total_tem_linha_alta_o_bastante_pra_fonte_grande():
+    """Bug real: o Excel NAO recalcula a altura da linha sozinho quando a
+    celula com a fonte maior esta mesclada (limitacao do proprio Excel) --
+    sem altura explicita, "R$ 229,00" em fonte 20 aparecia cortado pela
+    metade."""
+    ws = _abrir(_doc(numero_documento="1", valor_total=229.0))[0]["Relatório"]
+    linha = _linha_com_texto(ws, "Valor total")
+    altura = ws.row_dimensions[linha].height
+    assert altura is not None and altura >= TAMANHO_FONTE_VALOR_PRINCIPAL * 1.2
+
+
+def test_relatorio_rodape_da_legenda_tem_espaco_antes_do_ultimo_bloco():
+    """A propria linha imediatamente acima do rodape tem que ser um espacador
+    DEDICADO da legenda (altura fixa, sem conteudo) -- nao basta o espaco que
+    ja sobra depois do ultimo bloco do documento (que existe independente
+    disso e nao e garantido em todo layout, ex: sem "Dados adicionais")."""
+    d = _doc(numero_documento="1", emissor="E (CNPJ 11.222.333/0001-81)", confiancas={"emissor": "baixa"})
+    ws = _abrir(d)[0]["Relatório"]
+    texto_baixa = next(t for e, t in LEGENDA_LINHAS if e == "baixa")
+    linha_legenda = _linha_com_texto(ws, texto_baixa, coluna=3)
+    linha_espacador = linha_legenda - 1
+    assert all(ws.cell(linha_espacador, c).value in (None, "") for c in range(1, 7))
+    assert ws.row_dimensions[linha_espacador].height == 12
+
+
+def test_relatorio_campo_monetario_adicional_fica_em_valores_o_resto_em_dados_adicionais():
+    d = _doc(campos_adicionais=[
+        {"campo": "Valor do Documento", "valor": "1.000,00"},
+        {"campo": "CFOP", "valor": "5102"},
+    ])
+    ws = _abrir(d)[0]["Relatório"]
+    linha_valores = _linha_com_texto(ws, "VALORES")
+    linha_dados = _linha_com_texto(ws, "DADOS ADICIONAIS")
+    assert linha_valores < _linha_com_texto(ws, "Valor do Documento") < linha_dados
+    assert _linha_com_texto(ws, "CFOP") > linha_dados
+    assert _valor_por_rotulo(ws, "Valor do Documento").value == 1000.0
+
+
+def test_relatorio_tabela_de_itens_compacta_sem_ser_tabela_do_excel():
+    d = _doc(itens=[{"descricao": "Mochila", "quantidade": 1.0, "valor_unitario": 215.03, "valor_total": 215.03}])
+    ws = _abrir(d)[0]["Relatório"]
+    linha = _linha_com_texto(ws, "Mochila")
+    assert linha is not None
+    assert ws.cell(linha, 6).value == 215.03 and ws.cell(linha, 6).number_format == FORMATO_MOEDA
+    assert ws.tables == {}  # formatada em celulas, NAO uma Tabela nomeada (plano aprovado)
+
+
+def test_relatorio_sem_itens_nao_mostra_a_secao():
+    ws = _abrir(_doc(numero_documento="1"))[0]["Relatório"]
+    assert _linha_com_texto(ws, "ITENS") is None
+
+
+def test_relatorio_pontos_de_atencao_so_aparece_quando_ha_aviso():
+    com_aviso = _abrir(_doc(numero_documento="1", avisos=["a soma não bate"]))[0]["Relatório"]
+    linha = _linha_com_texto(com_aviso, "PONTOS DE ATENÇÃO")
+    assert linha is not None and "a soma não bate" in com_aviso.cell(linha + 1, 2).value
+
+    sem_aviso = _abrir(_doc(numero_documento="1"))[0]["Relatório"]
+    assert _linha_com_texto(sem_aviso, "PONTOS DE ATENÇÃO") is None
+
+
+def test_relatorio_quebra_de_pagina_entre_documentos_do_lote_mas_nao_com_1_so():
+    ws_lote = _abrir(_doc(arquivo="1.pdf", numero_documento="1"), _doc(arquivo="2.pdf", numero_documento="2"))[0]["Relatório"]
+    assert len(ws_lote.row_breaks.brk) == 1  # 2 documentos -> 1 quebra, entre os dois
+
+    ws_um = _abrir(_doc(numero_documento="1"))[0]["Relatório"]
+    assert len(ws_um.row_breaks.brk) == 0
+
+
+def test_relatorio_rodape_so_mostra_as_cores_que_aparecem_de_verdade():
+    texto_baixa = next(t for e, t in LEGENDA_LINHAS if e == "baixa")
+    com_baixa = _abrir(_doc(numero_documento="1", emissor="E (CNPJ 11.222.333/0001-81)", confiancas={"emissor": "baixa"}))[0]["Relatório"]
+    linha = _linha_com_texto(com_baixa, texto_baixa, coluna=3)
+    assert linha is not None and _fundo(com_baixa.cell(linha, 2)) == FUNDOS["baixa"]
+    # as OUTRAS legendas (media/corrigido) nao aparecem -- so a que foi usada
+    for estado, texto in LEGENDA_LINHAS:
+        if estado != "baixa":
+            assert _linha_com_texto(com_baixa, texto, coluna=3) is None
+
+    sem_nenhuma = _abrir(_doc(numero_documento="1"))[0]["Relatório"]
+    for _, texto in LEGENDA_LINHAS:
+        assert _linha_com_texto(sem_nenhuma, texto, coluna=3) is None
+
+
+def test_relatorio_sem_grade_e_com_margem_estreita():
+    ws = _abrir(_doc(numero_documento="1"))[0]["Relatório"]
+    assert ws.sheet_view.showGridLines is False
+    assert ws.column_dimensions["A"].width < ws.column_dimensions["B"].width
+
+
 # ---------- seguranca e robustez ----------
 
 
@@ -606,8 +800,8 @@ def test_texto_que_parece_formula_fica_texto_e_nao_vira_formula():
              avisos=["=cmd|' /C calc'!A0"])
     wb, buffer = _abrir(d)
 
-    assert _celula(wb["Resumo"], "Emissor").value == perigoso
-    assert _celula(wb["Resumo"], "Destinatário").value == "=1+1"
+    assert _celula(wb["Documentos"], "Emissor").value == perigoso
+    assert _celula(wb["Documentos"], "Destinatário").value == "=1+1"
     assert _celula(wb["Itens"], "Descrição").value == "=SUM(A1:A2)"
 
     # a UNICA formula do arquivo e a soma da linha de total dos Itens -- gerada
@@ -637,13 +831,13 @@ def test_texto_que_parece_formula_fica_texto_e_nao_vira_formula():
 
 def test_caracteres_de_controle_sao_removidos_em_vez_de_quebrar_o_arquivo():
     d = _doc(emissor="EMPRESA\x00\x01\x0b LTDA", numero_documento="12\x1f3")
-    ws = _abrir(d)[0]["Resumo"]
+    ws = _abrir(d)[0]["Documentos"]
     assert _celula(ws, "Emissor").value == "EMPRESA LTDA"
     assert _celula(ws, "Número").value == "123"
 
 
 def test_texto_gigante_e_truncado_no_limite_do_excel():
-    ws = _abrir(_doc(emissor="X" * 40000))[0]["Resumo"]
+    ws = _abrir(_doc(emissor="X" * 40000))[0]["Documentos"]
     assert len(_celula(ws, "Emissor").value) == 32767
 
 
@@ -651,7 +845,7 @@ def test_larguras_ajustadas_ao_conteudo_com_teto():
     d = _doc(numero_documento="1", emissor="E" * 200, destinatario="Curto",
              campos_adicionais=[{"campo": "Chave de Acesso", "valor": CHAVE_44}])
     wb, _ = _abrir(d)
-    resumo = wb["Resumo"]
+    resumo = wb["Documentos"]
     largura = lambda ws, letra: ws.column_dimensions[letra].width
     assert largura(resumo, "H") == 60  # Emissor: 200 chars -> teto
     assert largura(resumo, "C") >= len("Nota fiscal 1")  # Documento cabe

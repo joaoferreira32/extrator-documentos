@@ -94,9 +94,10 @@ from openpyxl import Workbook
 from openpyxl.comments import Comment
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.pagebreak import Break
 from openpyxl.worksheet.table import Table, TableStyleInfo
 
-from app.confianca import NIVEIS, resumo_confianca, vazio
+from app.confianca import CAMPOS_OBRIGATORIOS, NIVEIS, e_obrigatorio, resumo_confianca, vazio
 from app.schemas import DocumentoParaExportar
 
 NOME_APLICATIVO = "Extrator Inteligente de Documentos"
@@ -142,10 +143,21 @@ CABECALHOS_ITENS = ["ID", "Documento", "Descrição", "Quantidade", "Valor unit�
 CABECALHOS_CAMPOS = ["ID", "Documento", "Campo", "Valor", "Confiança"]
 CABECALHOS_AVISOS = ["ID", "Documento", "Aviso"]
 
-# nome da aba -> nome da Tabela nomeada (Excel nao aceita espaço em nome de tabela)
-NOMES_TABELA = {"Resumo": "Resumo", "Itens": "Itens", "Campos adicionais": "CamposAdicionais", "Avisos": "Avisos"}
+# nome da aba -> nome da Tabela nomeada (Excel nao aceita espaço em nome de
+# tabela). Chave = titulo real da aba (por isso "Documentos", nao "Resumo" --
+# a aba foi renomeada na etapa 9). Identificadores internos que NAO sao nome
+# de aba (CABECALHOS_RESUMO, _linha_resumo, ws_resumo...) continuam com o
+# nome antigo de proposito, pra nao inflar o diff com renomeacoes que nao
+# mudam comportamento nenhum.
+NOME_ABA_DOCUMENTOS = "Documentos"
+NOMES_TABELA = {
+    NOME_ABA_DOCUMENTOS: "Documentos", "Itens": "Itens", "Campos adicionais": "CamposAdicionais", "Avisos": "Avisos"
+}
 
-# aba de apoio (Legenda): cor de verdade ao lado do texto, nao so descrita em palavras
+# legenda de cor (media/baixa/corrigido): cor de verdade ao lado do texto, nao
+# so descrita em palavras. Etapa 9: nao e mais uma aba a parte (Legenda foi
+# removida) -- vira o rodape da aba Relatorio, e SO com as cores que aparecem
+# de verdade no lote exportado (ver _rodape_legenda).
 LEGENDA_LINHAS = [
     ("media", 'Confiança média: valor inferido pela posição no documento, sem rótulo explícito. Confira.'),
     ("baixa", "Confiança baixa: sem rótulo que confirme o valor. Confira e corrija antes de usar."),
@@ -159,6 +171,7 @@ _LIMITE_TEXTO_EXCEL = 32767
 _DOC_FISCAL_RE = re.compile(r"^(?P<nome>.*?)\s*\((?P<tipo>CNPJ|CPF)\s+(?P<doc>[^()]+?)\)\s*$", re.DOTALL)
 _DATA_BR_RE = re.compile(r"^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$")
 _DATA_ISO_RE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})$")
+_CHAVE_ACESSO_RE = re.compile(r"^\d{44}$")
 
 
 @dataclass
@@ -174,6 +187,16 @@ class Celula:
 
 def _texto_seguro(texto: str) -> str:
     return _CONTROLE_RE.sub("", texto)[:_LIMITE_TEXTO_EXCEL]
+
+
+def _formatar_chave_acesso(valor: str) -> str:
+    """Mesma exibicao em blocos de 4 digitos que a tela usa pra Chave de
+    Acesso -- so exibicao (na aba Campos adicionais E no Relatorio); o valor
+    exportado no JSON/API continua sem espaco."""
+    digitos = re.sub(r"\D", "", valor)
+    if not _CHAVE_ACESSO_RE.match(digitos):
+        return valor
+    return " ".join(digitos[i:i + 4] for i in range(0, 44, 4))
 
 
 def _numero_br(texto: str) -> Optional[float]:
@@ -354,7 +377,11 @@ def _linhas_campos(id_doc: int, doc: DocumentoParaExportar, rotulo: str) -> list
         if chave in CAMPOS_MONETARIOS and _numero_br(valor) is not None:
             celula_valor = Celula(_numero_br(valor), FORMATO_MOEDA, estado, _comentario(estado, doc.corrigidos.get(chave)))
         else:
-            celula_valor = Celula(valor, None, estado, _comentario(estado, doc.corrigidos.get(chave)))
+            # Chave de Acesso em blocos de 4 digitos -- mesma exibicao da
+            # tela e do Relatorio (so exibicao; o valor exportado no
+            # JSON/API continua sem espaco, ver DocumentoExtraido).
+            valor_exibido = _formatar_chave_acesso(valor) if chave == "Chave de Acesso" else valor
+            celula_valor = Celula(valor_exibido, None, estado, _comentario(estado, doc.corrigidos.get(chave)))
 
         if chave in doc.corrigidos:
             nivel = "corrigido"
@@ -560,36 +587,395 @@ def _escrever_linha_total_itens(ws, n_itens: int) -> None:
         celula.alignment = Alignment(horizontal="right", vertical="center", indent=1)
 
 
-def _escrever_legenda(ws) -> None:
-    """Aba de apoio, estatica, sem Tabela/filtro/zebra/cor de guia (sinaliza
-    "isto e texto de apoio, nao dado"). Uma celula com a cor DE VERDADE ao
-    lado do texto -- ver docstring do modulo sobre a decisao de usar uma
-    aba em vez de repetir a explicacao em rodape nas 4 abas de dados."""
-    for coluna, titulo in enumerate(("Cor", "Significado"), start=1):
-        celula = ws.cell(row=1, column=coluna, value=titulo)
-        celula.font = _fonte(negrito=True, cor=COR_CABECALHO_TEXTO)
-        celula.fill = PatternFill("solid", start_color=COR_CABECALHO_FUNDO, end_color=COR_CABECALHO_FUNDO)
-        celula.border = _borda_padrao()
-    ws.row_dimensions[1].height = ALTURA_LINHA_CABECALHO
+# ---------- Relatorio (etapa 9): aba de LEITURA, nao de dado tabular ----------
+#
+# As outras abas (Documentos/Itens/Campos adicionais/Avisos) continuam
+# existindo -- servem pra filtro, Tabela Dinamica, Power Query. O Relatorio e
+# a MESMA informacao, reorganizada em blocos (emitente, destinatario,
+# valores...) pra quem so quer LER o documento, sem interpretar uma tabela.
+# Por isso e a 1a aba (a que abre) e a unica com cabecalho de pagina em cima
+# -- aqui NAO ha o risco de confundir leitor automatico que ja descartou a
+# linha de titulo mesclada nas abas de dados (ver docstring do modulo): esta
+# aba nao e uma tabela, ninguem vai ler ela por Power Query.
+COR_RUBRICA = "667080"  # --color-text-muted: rotulo em cinza, discreto
+COR_AUSENTE = "98A2B3"  # --color-text-faint: "nao encontrado" (campo obrigatorio vazio)
+TAMANHO_FONTE_APLICATIVO = 18
+TAMANHO_FONTE_TITULO_DOCUMENTO = 13
+TAMANHO_FONTE_VALOR_PRINCIPAL = 20
+ALTURA_LINHA_VALOR_PRINCIPAL = 28  # generoso o bastante pra fonte 20 nao cortar (ver _linha_campo)
+LARGURAS_RELATORIO = {"A": 3, "B": 22, "C": 15, "D": 15, "E": 15, "F": 15}
+ROTULOS_MODO = {"basico": "Modo básico", "ia": "Modo IA"}
+ROTULOS_ORIGEM = {"digital": "Texto digital", "ocr": "OCR"}
 
-    for numero_linha, (estado, texto) in enumerate(LEGENDA_LINHAS, start=2):
+
+@dataclass
+class CampoRelatorio:
+    """Uma linha rotulo+valor do Relatorio. `celula` None + `ausente` True =
+    campo OBRIGATORIO vazio ("não encontrado"); o proprio CampoRelatorio
+    None (nao um valor deste tipo) = campo OPCIONAL vazio, a linha some."""
+    rotulo: str
+    celula: Optional[Celula]
+    ausente: bool = False
+
+
+def _campo_relatorio(
+    rotulo: str, chave: str, valor, doc: DocumentoParaExportar, tipo: str, formato: Optional[str] = None
+) -> Optional[CampoRelatorio]:
+    """None (linha omitida) quando opcional e vazio; "não encontrado" quando
+    obrigatorio e vazio -- mesma lista de obrigatorios por tipo que a tela
+    usa (`app.confianca.CAMPOS_OBRIGATORIOS`, testada e2e contra a tela).
+    `formato` so se aplica quando o valor realmente vira numero (ex: Valor
+    total -> FORMATO_MOEDA); string (conversao ja falhou antes) ignora."""
+    if vazio(valor):
+        return CampoRelatorio(rotulo, None, ausente=True) if e_obrigatorio(tipo, chave) else None
+    return CampoRelatorio(rotulo, _celula(valor, chave, doc, formato))
+
+
+def _campo_relatorio_data(rotulo: str, chave: str, texto: Optional[str], doc: DocumentoParaExportar, tipo: str) -> Optional[CampoRelatorio]:
+    if vazio(texto):
+        return CampoRelatorio(rotulo, None, ausente=True) if e_obrigatorio(tipo, chave) else None
+    data = _para_data(texto)
+    return CampoRelatorio(rotulo, _celula(data if data else texto, chave, doc, FORMATO_DATA if data else None))
+
+
+def _campos_relatorio_fiscal(
+    rotulo_nome: str, chave: str, valor_completo: Optional[str], doc: DocumentoParaExportar, tipo: str
+) -> tuple[Optional[CampoRelatorio], Optional[CampoRelatorio]]:
+    """Como `_campo_relatorio`, mas pra emissor/destinatario: separa "NOME
+    (CNPJ x)" em nome + documento fiscal (mesmo formato das outras abas).
+    Os dois levam o MESMO destaque de confianca; o comentario (com o valor
+    original) fica so no nome -- mesmo padrao da aba Documentos."""
+    if vazio(valor_completo):
+        campo = CampoRelatorio(rotulo_nome, None, ausente=True) if e_obrigatorio(tipo, chave) else None
+        return campo, None
+    nome, doc_fiscal = separar_documento_fiscal(valor_completo)
+    c_nome = _celula(nome, chave, doc)
+    campo_nome = CampoRelatorio(rotulo_nome, c_nome)
+    if vazio(doc_fiscal):
+        return campo_nome, None
+    campo_doc = CampoRelatorio("CNPJ/CPF", Celula(doc_fiscal, None, c_nome.estado, None))
+    return campo_nome, campo_doc
+
+
+def _titulo_secao(ws, linha: int, titulo: str) -> int:
+    """Titulo de bloco (DOCUMENTO/EMISSOR/...): maiusculo, negrito, linha
+    fina na cor de destaque embaixo -- hierarquia sem precisar de mais cor."""
+    celula = ws.cell(row=linha, column=2, value=titulo.upper())
+    celula.font = _fonte(negrito=True, cor=COR_CABECALHO_FUNDO, tamanho=10)
+    borda = Border(bottom=Side(style="thin", color=COR_CABECALHO_FUNDO))
+    for coluna in range(2, 7):
+        ws.cell(row=linha, column=coluna).border = borda
+    return linha + 1
+
+
+def _espaco(ws, linha: int, altura: int = 6) -> int:
+    ws.row_dimensions[linha].height = altura
+    return linha + 1
+
+
+def _linha_campo(
+    ws, linha: int, campo: Optional[CampoRelatorio], *,
+    tamanho: int = 11, negrito: bool = False, cor_valor: Optional[str] = None, altura: Optional[int] = None,
+) -> int:
+    """Rotulo em cinza (coluna B) + valor (C:F mescladas) com o MESMO
+    destaque de confianca (fundo + comentario) das abas de dados. `campo`
+    None nao escreve nada (campo opcional vazio -- a linha inteira some).
+
+    `altura`: o Excel NAO recalcula a altura da linha sozinho quando a
+    celula com a fonte maior esta MESCLADA -- limitacao conhecida do
+    proprio Excel, nao do openpyxl (o resto do arquivo confia no auto-ajuste
+    porque nunca combina fonte grande com celula mesclada, exceto aqui).
+    Bug real: sem isso, "R$ 900,00" em fonte 20 aparecia cortado pela
+    metade. So o Valor total passa isso; o resto usa None (auto)."""
+    if campo is None:
+        return linha
+    vertical = "top"
+    if altura:
+        ws.row_dimensions[linha].height = altura
+        vertical = "center"  # linha alta de proposito (fonte grande): centraliza em vez de "flutuar" no topo
+
+    c_rotulo = ws.cell(row=linha, column=2, value=campo.rotulo)
+    c_rotulo.font = _fonte(cor=COR_RUBRICA, tamanho=9)
+    c_rotulo.alignment = Alignment(horizontal="left", vertical=vertical, wrap_text=True, indent=1)
+
+    ws.merge_cells(start_row=linha, start_column=3, end_row=linha, end_column=6)
+    c_valor = ws.cell(row=linha, column=3)
+    estado = campo.celula.estado if campo.celula else None
+
+    if campo.ausente:
+        c_valor.value = "não encontrado"
+        c_valor.data_type = "s"
+        c_valor.font = _fonte(italico=True, cor=COR_AUSENTE, tamanho=tamanho)
+    else:
+        valor = campo.celula.valor
+        if isinstance(valor, str):
+            texto = _texto_seguro(valor)
+            if texto:
+                c_valor.value = texto
+                c_valor.data_type = "s"  # NUNCA formula (ver docstring do modulo)
+                c_valor.number_format = FORMATO_TEXTO
+            c_valor.font = _fonte(negrito=negrito, cor=cor_valor, tamanho=tamanho)
+        elif valor is not None:
+            c_valor.value = valor
+            if campo.celula.formato:
+                c_valor.number_format = campo.celula.formato
+            c_valor.font = _fonte(negrito=negrito, cor=cor_valor, tamanho=tamanho)
+    c_valor.alignment = Alignment(horizontal="left", vertical=vertical, wrap_text=True, indent=1)
+
+    if estado in FUNDOS:
         cor = FUNDOS[estado]
-        # sem value: value="" vira uma celula tipada como texto SEM texto
-        # (<c t="inlineStr"/> sem <is>), um estado que o Excel nao produz
-        cel_cor = ws.cell(row=numero_linha, column=1)
-        cel_cor.fill = PatternFill("solid", start_color=cor, end_color=cor)
-        cel_cor.border = _borda_padrao()
-        cel_texto = ws.cell(row=numero_linha, column=2, value=texto)
-        cel_texto.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True, indent=1)
-        cel_texto.border = _borda_padrao()
+        for coluna in (2, 3):
+            ws.cell(row=linha, column=coluna).fill = PatternFill("solid", start_color=cor, end_color=cor)
         if estado == "corrigido":
-            cel_texto.font = _fonte(italico=True)
+            c_valor.font = _fonte(italico=True, negrito=negrito, cor=cor_valor, tamanho=tamanho)
+    if campo.celula and campo.celula.comentario:
+        comentario = Comment(campo.celula.comentario, "Extrator")
+        comentario.width, comentario.height = 280, 90
+        c_valor.comment = comentario
 
-    ws.column_dimensions["A"].width = 10
-    ws.column_dimensions["B"].width = 80
-    ws.freeze_panes = "A2"
-    # sem Tabela/filtro (nao e dado filtravel) e sem tabColor (guia neutra
-    # de proposito, ao contrario das 4 abas de dados)
+    return linha + 1
+
+
+def _bloco_avisos(ws, linha: int, avisos: list[str]) -> int:
+    if not avisos:
+        return linha
+    linha = _titulo_secao(ws, linha, "Pontos de atenção")
+    for aviso in avisos:
+        ws.merge_cells(start_row=linha, start_column=2, end_row=linha, end_column=6)
+        celula = ws.cell(row=linha, column=2)
+        texto = _texto_seguro(f"⚠ {aviso}")
+        if texto:
+            celula.value = texto
+            celula.data_type = "s"
+            celula.number_format = FORMATO_TEXTO
+        celula.font = _fonte(cor="8A5A00", tamanho=10)  # --color-warning
+        celula.fill = PatternFill("solid", start_color="FDF3E0", end_color="FDF3E0")  # --color-warning-bg
+        celula.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True, indent=1)
+        linha += 1
+    return _espaco(ws, linha, altura=8)
+
+
+def _cabecalho_documento(ws, linha: int, doc: DocumentoParaExportar, rotulo: str) -> int:
+    celula = ws.cell(row=linha, column=2)
+    texto_rotulo = _texto_seguro(rotulo)
+    if texto_rotulo:
+        celula.value = texto_rotulo
+        celula.data_type = "s"  # NUNCA formula (rotulo embute numero_documento, vindo do PDF)
+        celula.number_format = FORMATO_TEXTO
+    celula.font = _fonte(negrito=True, cor=COR_DESTAQUE_VALOR_TOTAL, tamanho=TAMANHO_FONTE_TITULO_DOCUMENTO)
+    linha += 1
+
+    partes = [
+        doc.arquivo,
+        ROTULOS_MODO.get(doc.resultado.modo_extracao),
+        ROTULOS_ORIGEM.get(doc.resultado.origem_texto),
+    ]
+    subtitulo = " · ".join(p for p in partes if p)
+    if subtitulo:
+        celula = ws.cell(row=linha, column=2, value=_texto_seguro(subtitulo))
+        celula.data_type = "s"
+        celula.font = _fonte(italico=True, cor=COR_RUBRICA, tamanho=8)
+        linha += 1
+    return _espaco(ws, linha, altura=8)
+
+
+def _bloco_itens(ws, linha: int, doc: DocumentoParaExportar) -> int:
+    itens = doc.resultado.documento.itens
+    if not itens:
+        return linha
+    linha = _titulo_secao(ws, linha, "Itens")
+
+    ws.merge_cells(start_row=linha, start_column=2, end_row=linha, end_column=3)
+    for coluna, titulo in ((2, "Descrição"), (4, "Qtd."), (5, "Vl. unit."), (6, "Vl. total")):
+        celula = ws.cell(row=linha, column=coluna, value=titulo)
+        celula.font = _fonte(negrito=True, cor=COR_RUBRICA, tamanho=8)
+        celula.alignment = Alignment(horizontal="left" if coluna == 2 else "right", vertical="center", indent=1)
+    linha += 1
+
+    nivel = doc.resultado.confiancas.get("itens")
+    estado = nivel if nivel in ("media", "baixa") else None
+    for item in itens:
+        ws.merge_cells(start_row=linha, start_column=2, end_row=linha, end_column=3)
+        c_desc = ws.cell(row=linha, column=2)
+        texto = _texto_seguro(item.descricao) if item.descricao else ""
+        if texto:
+            c_desc.value = texto
+            c_desc.data_type = "s"
+            c_desc.number_format = FORMATO_TEXTO
+        c_desc.font = _fonte(tamanho=10)
+        c_desc.alignment = Alignment(horizontal="left", vertical="top", wrap_text=True, indent=1)
+
+        for coluna, valor, formato in (
+            (4, item.quantidade, None),
+            (5, item.valor_unitario, FORMATO_MOEDA_UNITARIO),
+            (6, item.valor_total, FORMATO_MOEDA),
+        ):
+            celula = ws.cell(row=linha, column=coluna)
+            if isinstance(valor, (int, float)) and not isinstance(valor, bool):
+                celula.value = valor
+                if formato:
+                    celula.number_format = formato
+            elif isinstance(valor, str):
+                texto = _texto_seguro(valor)
+                if texto:
+                    celula.value = texto
+                    celula.data_type = "s"
+                    celula.number_format = FORMATO_TEXTO
+            celula.font = _fonte(tamanho=10)
+            celula.alignment = Alignment(horizontal="right", vertical="top", indent=1)
+
+        if estado in FUNDOS:
+            cor = FUNDOS[estado]
+            for coluna in range(2, 7):
+                ws.cell(row=linha, column=coluna).fill = PatternFill("solid", start_color=cor, end_color=cor)
+        linha += 1
+    return _espaco(ws, linha, altura=8)
+
+
+def _escrever_documento_relatorio(ws, linha: int, doc: DocumentoParaExportar, rotulo: str) -> tuple[int, set[str]]:
+    """Escreve o bloco de UM documento a partir de `linha`. Devolve
+    (proxima_linha, estados_de_confianca_usados) -- alimenta o rodape da
+    legenda, que so mostra a cor que realmente apareceu no lote."""
+    documento = doc.resultado.documento
+    tipo = documento.tipo_documento
+    estados: set[str] = set()
+
+    def com(*campos: Optional[CampoRelatorio]) -> None:
+        for campo in campos:
+            if campo and campo.celula and campo.celula.estado:
+                estados.add(campo.celula.estado)
+
+    linha = _cabecalho_documento(ws, linha, doc, rotulo)
+
+    avisos_doc = doc.resultado.avisos or ([doc.resultado.aviso] if doc.resultado.aviso else [])
+    linha = _bloco_avisos(ws, linha, avisos_doc)
+
+    # DOCUMENTO
+    linha = _titulo_secao(ws, linha, "Documento")
+    c_tipo = ws.cell(row=linha, column=2, value="Tipo")
+    c_tipo.font = _fonte(cor=COR_RUBRICA, tamanho=9)
+    c_tipo.alignment = Alignment(horizontal="left", vertical="top", indent=1)
+    ws.merge_cells(start_row=linha, start_column=3, end_row=linha, end_column=6)
+    c_valor_tipo = ws.cell(row=linha, column=3)
+    # tipo normalmente e um dos valores conhecidos, mas o modo IA pode
+    # inventar qualquer string -- sanitiza igual a qualquer texto do PDF
+    texto_tipo = _texto_seguro(ROTULOS_TIPO.get(tipo, tipo))
+    if texto_tipo:
+        c_valor_tipo.value = texto_tipo
+        c_valor_tipo.data_type = "s"
+        c_valor_tipo.number_format = FORMATO_TEXTO
+    c_valor_tipo.alignment = Alignment(horizontal="left", vertical="top", indent=1)
+    linha += 1
+    campo_numero = _campo_relatorio("Número", "numero_documento", documento.numero_documento, doc, tipo)
+    campo_emissao = _campo_relatorio_data("Data de emissão", "data_emissao", documento.data_emissao, doc, tipo)
+    campo_vencimento = _campo_relatorio_data("Data de vencimento", "data_vencimento", documento.data_vencimento, doc, tipo)
+    com(campo_numero, campo_emissao, campo_vencimento)
+    linha = _linha_campo(ws, linha, campo_numero)
+    linha = _linha_campo(ws, linha, campo_emissao)
+    linha = _linha_campo(ws, linha, campo_vencimento)
+    linha = _espaco(ws, linha, altura=8)
+
+    # EMISSOR / DESTINATARIO
+    for titulo, chave, valor in (("Emissor", "emissor", documento.emissor), ("Destinatário", "destinatario", documento.destinatario)):
+        campo_nome, campo_doc_fiscal = _campos_relatorio_fiscal("Nome", chave, valor, doc, tipo)
+        if campo_nome is None and campo_doc_fiscal is None:
+            continue  # opcional e vazio (nunca acontece hoje -- os dois sao obrigatorios em quase todo tipo -- mas nao inventa secao vazia se um dia acontecer)
+        linha = _titulo_secao(ws, linha, titulo)
+        com(campo_nome, campo_doc_fiscal)
+        linha = _linha_campo(ws, linha, campo_nome)
+        linha = _linha_campo(ws, linha, campo_doc_fiscal)
+        linha = _espaco(ws, linha, altura=8)
+
+    # VALORES
+    linha = _titulo_secao(ws, linha, "Valores")
+    campo_total = _campo_relatorio("Valor total", "valor_total", documento.valor_total, doc, tipo, formato=FORMATO_MOEDA)
+    com(campo_total)
+    linha = _linha_campo(
+        ws, linha, campo_total, tamanho=TAMANHO_FONTE_VALOR_PRINCIPAL, negrito=True,
+        cor_valor=COR_DESTAQUE_VALOR_TOTAL, altura=ALTURA_LINHA_VALOR_PRINCIPAL,
+    )
+    for extra in documento.campos_adicionais:
+        if extra.campo not in CAMPOS_MONETARIOS:
+            continue
+        estado = _estado_visual(extra.campo, extra.valor, doc)
+        numero = _numero_br(extra.valor)
+        celula = Celula(
+            numero if numero is not None else extra.valor,
+            FORMATO_MOEDA if numero is not None else None,
+            estado,
+            _comentario(estado, doc.corrigidos.get(extra.campo)),
+        )
+        campo = CampoRelatorio(extra.campo, celula)
+        com(campo)
+        linha = _linha_campo(ws, linha, campo)
+    linha = _espaco(ws, linha, altura=8)
+
+    # DADOS ADICIONAIS (o resto dos campos_adicionais, nao monetarios)
+    outros = [e for e in documento.campos_adicionais if e.campo not in CAMPOS_MONETARIOS]
+    if outros:
+        linha = _titulo_secao(ws, linha, "Dados adicionais")
+        for extra in outros:
+            estado = _estado_visual(extra.campo, extra.valor, doc)
+            valor_exibido = _formatar_chave_acesso(extra.valor) if extra.campo == "Chave de Acesso" else extra.valor
+            celula = Celula(valor_exibido, None, estado, _comentario(estado, doc.corrigidos.get(extra.campo)))
+            campo = CampoRelatorio(extra.campo, celula)
+            com(campo)
+            linha = _linha_campo(ws, linha, campo)
+        linha = _espaco(ws, linha, altura=8)
+
+    linha = _bloco_itens(ws, linha, doc)
+    if doc.resultado.confiancas.get("itens") in ("media", "baixa"):
+        estados.add(doc.resultado.confiancas["itens"])
+
+    return _espaco(ws, linha, altura=16), estados
+
+
+def _rodape_legenda(ws, linha: int, estados_presentes: set[str]) -> None:
+    """So as cores que aparecem DE VERDADE neste lote -- nunca as 3 juntas
+    "por via das dúvidas". Se nenhuma apareceu (tudo "alta", sem correcao),
+    nao ha rodape nenhum."""
+    relevantes = [(estado, texto) for estado, texto in LEGENDA_LINHAS if estado in estados_presentes]
+    if not relevantes:
+        return
+    linha = _espaco(ws, linha, altura=12)  # respiro antes do rodape (senao cola no ultimo bloco)
+    for estado, texto in relevantes:
+        cor = FUNDOS[estado]
+        ws.cell(row=linha, column=2).fill = PatternFill("solid", start_color=cor, end_color=cor)
+        ws.merge_cells(start_row=linha, start_column=3, end_row=linha, end_column=6)
+        celula = ws.cell(row=linha, column=3, value=texto)
+        celula.data_type = "s"
+        celula.font = _fonte(cor=COR_RUBRICA, tamanho=8, italico=(estado == "corrigido"))
+        celula.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True, indent=1)
+        linha += 1
+
+
+def _escrever_relatorio(ws, documentos: list[DocumentoParaExportar], data_geracao: date) -> None:
+    celula = ws.cell(row=1, column=2, value=NOME_APLICATIVO)
+    celula.font = _fonte(negrito=True, cor=COR_DESTAQUE_VALOR_TOTAL, tamanho=TAMANHO_FONTE_APLICATIVO)
+    celula = ws.cell(row=2, column=2, value=f"Relatório de extração · Gerado em {data_geracao.strftime('%d/%m/%Y')}")
+    celula.font = _fonte(italico=True, cor=COR_RUBRICA, tamanho=9)
+    linha = _espaco(ws, 3, altura=12)
+
+    estados_todos: set[str] = set()
+    for indice, doc in enumerate(documentos):
+        documento = doc.resultado.documento
+        rotulo = rotulo_documento(documento.tipo_documento, documento.numero_documento, doc.arquivo)
+        linha, estados = _escrever_documento_relatorio(ws, linha, doc, rotulo)
+        estados_todos |= estados
+        if indice < len(documentos) - 1:
+            ws.row_breaks.append(Break(id=linha - 1))  # quebra de pagina entre documentos, so no lote
+
+    _rodape_legenda(ws, linha, estados_todos)
+
+    ws.sheet_view.showGridLines = False  # e o que mais tira a "cara de planilha"
+    for coluna, largura in LARGURAS_RELATORIO.items():
+        ws.column_dimensions[coluna].width = largura
+    ws.page_setup.orientation = "portrait"  # layout estreito, ao contrario das abas de dados (paisagem)
+    ws.page_setup.fitToWidth = 1
+    ws.page_setup.fitToHeight = 0
+    ws.sheet_properties.pageSetUpPr.fitToPage = True
+    ws.print_options.horizontalCentered = True
+    ws.sheet_properties.tabColor = COR_CABECALHO_FUNDO  # unica aba colorida -- "comece por aqui"
 
 
 def gerar_excel(documentos: list[DocumentoParaExportar], data_geracao: Optional[date] = None) -> BytesIO:
@@ -623,9 +1009,13 @@ def gerar_excel(documentos: list[DocumentoParaExportar], data_geracao: Optional[
     # data logica do relatorio e por isso e controlavel/testavel), nao ha
     # motivo de privacidade pra mascarar quando o processo rodou de verdade.
 
-    ws_resumo = wb.active
-    ws_resumo.title = "Resumo"
-    _escrever_aba(ws_resumo, CABECALHOS_RESUMO, resumo, NOMES_TABELA["Resumo"])
+    # Relatorio: 1a aba (a que abre), a unica de LEITURA -- ver secao acima.
+    ws_relatorio = wb.active
+    ws_relatorio.title = "Relatório"
+    _escrever_relatorio(ws_relatorio, documentos, data_geracao)
+
+    ws_resumo = wb.create_sheet(NOME_ABA_DOCUMENTOS)
+    _escrever_aba(ws_resumo, CABECALHOS_RESUMO, resumo, NOMES_TABELA[NOME_ABA_DOCUMENTOS])
     _destacar_valor_total(ws_resumo, resumo)
     _nota_geracao(ws_resumo, len(CABECALHOS_RESUMO), data_geracao)
     _configurar_impressao(ws_resumo, get_column_letter(len(CABECALHOS_RESUMO)), max(len(resumo) + 1, 1))
@@ -646,9 +1036,15 @@ def gerar_excel(documentos: list[DocumentoParaExportar], data_geracao: Optional[
     _escrever_aba(ws_avisos, CABECALHOS_AVISOS, avisos, NOMES_TABELA["Avisos"])
     _configurar_impressao(ws_avisos, get_column_letter(len(CABECALHOS_AVISOS)), max(len(avisos) + 1, 1))
 
-    ws_legenda = wb.create_sheet("Legenda")
-    _escrever_legenda(ws_legenda)
-    _configurar_impressao(ws_legenda, "B", len(LEGENDA_LINHAS) + 1)
+    # Abas SEM NENHUM DADO ficam ocultas (nao removidas): a estrutura do
+    # arquivo continua estavel pra quem usa Power Query/formulas com o nome
+    # da aba fixo (ver docstring do modulo), mas quem abre no Excel nao ve
+    # uma aba vazia -- ex: Itens e Avisos de um boleto sem soma divergente.
+    # A aba Legenda foi removida (etapa 9): virou o rodape do Relatorio, so
+    # com as cores que aparecem de verdade (ver _rodape_legenda).
+    for aba, linhas in ((ws_itens, itens), (ws_campos, campos), (ws_avisos, avisos)):
+        if not linhas:
+            aba.sheet_state = "hidden"
 
     buffer = BytesIO()
     wb.save(buffer)

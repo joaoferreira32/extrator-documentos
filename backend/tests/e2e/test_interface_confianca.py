@@ -15,22 +15,16 @@ import pytest
 pytest.importorskip("playwright.sync_api", reason="instale requirements-dev.txt")
 
 import helpers  # noqa: E402
+from app.confianca import CAMPOS_OBRIGATORIOS  # noqa: E402
 
 pytestmark = pytest.mark.e2e
-
-BASE_OBRIGATORIOS = ["emissor", "destinatario", "numero_documento", "data_emissao", "valor_total"]
-OBRIGATORIOS = {
-    "nota_fiscal": BASE_OBRIGATORIOS,
-    "boleto": BASE_OBRIGATORIOS + ["data_vencimento"],
-    "pedido_compra": BASE_OBRIGATORIOS,
-}
 
 
 def esperado(resposta):
     """(alta, total, revisar, vazios) calculado A PARTIR DO JSON, em Python,
     de forma independente do frontend."""
     doc, conf = resposta["documento"], resposta["confiancas"]
-    obrigatorios = OBRIGATORIOS.get(doc["tipo_documento"], [])
+    obrigatorios = CAMPOS_OBRIGATORIOS.get(doc["tipo_documento"], [])
     alta = revisar = vazios = 0
     for chave in ["numero_documento", "data_emissao", "data_vencimento", "emissor", "destinatario", "valor_total"]:
         valor = doc[chave]
@@ -259,7 +253,8 @@ def test_chave_de_acesso_em_blocos_de_4_com_valor_intacto(tela):
     chave = tela.campo("extra-0")
     assert chave.locator(".valor-texto").inner_text() == helpers.CHAVE  # 11 blocos de 4
     assert tela.json_bruto()["documento"]["campos_adicionais"][0]["valor"] == helpers.CHAVE_SEM_ESPACOS
-    assert tela.baixar_excel().campos["Chave de Acesso"]["Valor"] == helpers.CHAVE_SEM_ESPACOS
+    # etapa 9: o Excel (Campos adicionais e Relatorio) tambem mostra em blocos de 4, igual a tela
+    assert tela.baixar_excel().campos["Chave de Acesso"]["Valor"] == helpers.CHAVE
 
     # abrir e confirmar sem mudar NAO e correcao (os espacos sao so exibicao)
     tela.page.click('[data-campo="extra-0"] .valor-btn')
@@ -385,7 +380,7 @@ def test_excel_da_danfe_reflete_a_tela_e_tem_as_4_abas(tela):
     x_y = _x_de_y_da_tela(tela)
     planilha = tela.baixar_excel()
 
-    assert planilha.wb.sheetnames == ["Resumo", "Itens", "Campos adicionais", "Avisos", "Legenda"]
+    assert planilha.wb.sheetnames == ["Relatório", "Documentos", "Itens", "Campos adicionais", "Avisos"]
     r = planilha.resumo
     assert (r["ID"], r["Arquivo"], r["Documento"], r["Tipo"], r["Número"]) == (
         1, "danfe_ok.pdf", "Nota fiscal 000012345", "nota_fiscal", "000012345",
@@ -393,15 +388,15 @@ def test_excel_da_danfe_reflete_a_tela_e_tem_as_4_abas(tela):
     assert r["Emissor"] == "DELL COMPUTADORES DO BRASIL LTDA" and r["Emissor CNPJ/CPF"] == "72.381.189/0010-01"
     assert r["Destinatário"] == "FULANO DE TAL SILVA" and r["Destinatário CNPJ/CPF"] == "000.000.000-00"
     assert r["Data de emissão"].date() == date(2026, 4, 15) and r["Valor total"] == 229.0
-    assert planilha.celula("Resumo", "Data de emissão").number_format == "dd/mm/yyyy"
-    assert planilha.celula("Resumo", "Valor total").number_format == '"R$" #,##0.00'
+    assert planilha.celula("Documentos", "Data de emissão").number_format == "dd/mm/yyyy"
+    assert planilha.celula("Documentos", "Valor total").number_format == '"R$" #,##0.00'
     assert _x_de_y_do_excel(planilha) == x_y, "Excel e tela devem contar igual (JS x Python)"
 
     assert [(i["ID"], i["Documento"], i["Descrição"]) for i in planilha.itens] == [(1, "Nota fiscal 000012345", "Mochila")]
     assert planilha.campos["Chave de Acesso"]["Confiança"] == "Alta"
-    assert planilha.campos["Chave de Acesso"]["Valor"] == helpers.CHAVE_SEM_ESPACOS  # 44 digitos, texto inteiro
+    assert planilha.campos["Chave de Acesso"]["Valor"] == helpers.CHAVE  # em blocos de 4, igual a tela
     assert planilha.campos["CFOP"]["Confiança"] == "Média"
-    assert planilha.avisos == []  # a aba existe, so com o cabecalho
+    assert planilha.avisos == []  # a aba existe (oculta, sem dado), so com o cabecalho
 
 
 def test_excel_do_boleto_reflete_a_tela(tela):
@@ -426,7 +421,7 @@ def test_excel_da_danfe_com_problemas_tem_avisos_e_destaques(tela):
 
     assert [a["Aviso"] for a in planilha.avisos] == resposta["avisos"]  # 1 linha por aviso
     assert all(a["ID"] == 1 and a["Documento"].startswith("Nota fiscal") for a in planilha.avisos)
-    assert _fundo(planilha.celula("Resumo", "Valor total")) == "FDF3E0"  # media (totais nao fecham)
+    assert _fundo(planilha.celula("Documentos", "Valor total")) == "FDF3E0"  # media (totais nao fecham)
     assert _fundo(planilha.celula("Itens", "Descrição")) == "FDF3E0"  # itens: media
     assert planilha.resumo["Número"] is None  # obrigatorio vazio na tela = celula vazia
     assert _x_de_y_do_excel(planilha) == x_y
@@ -444,7 +439,7 @@ def test_excel_marca_corrigidos_com_valor_original_e_o_resumo_continua_batendo_c
     planilha = tela.baixar_excel()
 
     assert _x_de_y_do_excel(planilha) == x_y, "corrigidos tambem ficam fora do X de Y no Excel"
-    emissor = planilha.celula("Resumo", "Emissor")
+    emissor = planilha.celula("Documentos", "Emissor")
     assert emissor.value == "EMISSOR CORRIGIDO LTDA"
     assert _fundo(emissor) == "E7F0EF" and emissor.font.italic
     # o comentario traz o que o extrator tinha lido (nome + CNPJ, antes da correcao)
@@ -458,7 +453,7 @@ def test_excel_marca_campo_esvaziado_pelo_usuario_como_corrigido(tela):
     tela.page.click('[data-campo="emissor"] .valor-btn')
     tela.campo("emissor").locator("textarea").fill("")
     tela.page.keyboard.press("Enter")
-    celula = tela.baixar_excel().celula("Resumo", "Emissor")
+    celula = tela.baixar_excel().celula("Documentos", "Emissor")
     assert celula.value is None and _fundo(celula) == "E7F0EF"
     assert "Empresa Exemplo Ltda" in celula.comment.text
 
@@ -467,3 +462,14 @@ def test_excel_usa_o_arquivo_que_gerou_o_resultado_e_nao_o_que_esta_selecionado(
     tela.extrair("danfe_ok")
     tela.page.set_input_files("#file-input", str(tela.pdfs["boleto"]))  # escolhe outro, sem extrair
     assert tela.baixar_excel().resumo["Arquivo"] == "danfe_ok.pdf"
+
+
+def test_campos_obrigatorios_da_tela_bate_com_os_do_python(tela):
+    """A aba Relatorio do Excel (app/confianca.py, CAMPOS_OBRIGATORIOS) e a
+    tela (script.js, mesmo nome) decidem "obrigatorio vazio -> 'nao
+    encontrado'" com a MESMA lista -- lida direto da pagina de verdade, nao
+    copiada a mao aqui (uma copia a mao e o que ja tinha desatualizado antes
+    deste teste existir)."""
+    tela.page.goto(tela.url)
+    js = tela.page.evaluate("CAMPOS_OBRIGATORIOS")
+    assert js == CAMPOS_OBRIGATORIOS

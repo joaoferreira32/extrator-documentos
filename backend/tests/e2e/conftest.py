@@ -62,8 +62,8 @@ class Planilha:
 
     @property
     def resumo(self):
-        """A 1a (e, hoje, unica) linha do Resumo."""
-        return self.linhas("Resumo")[0]
+        """A 1a (e, hoje, unica) linha da aba Documentos."""
+        return self.linhas("Documentos")[0]
 
     @property
     def itens(self):

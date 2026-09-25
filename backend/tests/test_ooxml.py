@@ -91,7 +91,7 @@ def test_arquivo_gerado_respeita_as_regras_do_excel(nome):
 def test_aba_sem_dados_fica_sem_tabela_e_aba_com_dados_tem():
     wb = openpyxl.load_workbook(gerar_excel(CENARIOS["boleto (sem itens nem avisos)"]))
     assert wb["Itens"].tables == {} and wb["Avisos"].tables == {}
-    assert "CamposAdicionais" in wb["Campos adicionais"].tables and "Resumo" in wb["Resumo"].tables
+    assert "CamposAdicionais" in wb["Campos adicionais"].tables and "Documentos" in wb["Documentos"].tables
 
 
 # ---------- o verificador pega o que tem que pegar (senao ele e decorativo) ----------
