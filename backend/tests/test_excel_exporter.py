@@ -32,9 +32,13 @@ from app.excel_exporter import (
     LEGENDA_LINHAS,
     NOME_APLICATIVO,
     NOMES_TABELA,
+    SEM_CONFIANCA,
     TAMANHO_FONTE_APLICATIVO,
     TAMANHO_FONTE_VALOR_PRINCIPAL,
     TAMANHO_FONTE_VALOR_TOTAL,
+    VALORES_CONFIANCA,
+    VALORES_TIPO,
+    _lista_suspensa,
     gerar_excel,
     rotulo_documento,
     separar_documento_fiscal,
@@ -103,8 +107,8 @@ def _fundo(celula):
 
 
 def _linhas_sem_total(ws):
-    """_linhas(), mas descartando a linha de total dos Itens (ID vira o
-    rotulo "Total", nao um inteiro -- unica linha assim na aba)."""
+    """_linhas(), mas descartando a linha de total (Itens, ou Documentos num
+    lote de 2+) -- e a unica linha da aba cujo ID nao e um inteiro."""
     return [linha for linha in _linhas(ws) if isinstance(linha["ID"], int)]
 
 
@@ -200,7 +204,7 @@ def test_lote_de_dois_documentos_ids_documentos_e_linhas_ligados_pelo_id():
               itens=[{"descricao": "c"}], campos_adicionais=[{"campo": "Parcela", "valor": "1/2"}])
     wb, _ = _abrir(d1, d2)
 
-    resumo = _linhas(wb["Documentos"])
+    resumo = _linhas_sem_total(wb["Documentos"])
     assert [(r["ID"], r["Arquivo"], r["Documento"]) for r in resumo] == [
         (1, "um.pdf", "Nota fiscal 1"), (2, "dois.pdf", "Boleto 1"),
     ]
@@ -329,6 +333,296 @@ def test_coluna_confianca_dos_campos_adicionais_em_texto():
     assert [(l["Campo"], l["Confiança"]) for l in linhas] == [
         ("A", "Alta"), ("B", "Média"), ("C", "Baixa"), ("D", "Corrigido"),
     ]
+
+
+# ---------- protecao de planilha (sem senha) ----------
+
+
+def _lote_para_protecao():
+    return [
+        _doc(arquivo="1.pdf", numero_documento="1", valor_total=100.0, campos_adicionais=[{"campo": "CFOP", "valor": "5102"}],
+             itens=[{"descricao": "a", "quantidade": 1.0, "valor_total": 100.0}], avisos=["x"]),
+        _doc(arquivo="2.pdf", tipo_documento="boleto", numero_documento="2", valor_total=50.0),
+    ]
+
+
+def test_abas_de_dados_protegidas_sem_senha_e_relatorio_livre():
+    wb, _ = _abrir(*_lote_para_protecao())
+    for nome in _ABAS_DE_DADOS:
+        p = wb[nome].protection
+        assert p.sheet is True, nome
+        assert not p.password and not p.hashValue, f"{nome}: a trava e so contra engano, sem senha"
+    assert wb["Relatório"].protection.sheet is False
+
+
+def test_protecao_libera_filtro_ordenacao_e_largura_de_coluna():
+    """Semantica invertida do formato: False = LIBERADO. Filtro funcionando vale
+    mais que a trava (decisao do projeto)."""
+    for nome in _ABAS_DE_DADOS:
+        p = _abrir(*_lote_para_protecao())[0][nome].protection
+        assert p.autoFilter is False and p.sort is False and p.formatColumns is False and p.formatRows is False, nome
+        assert p.objects is False  # grafico continua selecionavel/copiavel
+
+
+def test_cabecalho_e_linhas_de_total_bloqueados_e_celulas_de_dado_livres():
+    wb, _ = _abrir(*_lote_para_protecao())
+    for nome in _ABAS_DE_DADOS:
+        ws = wb[nome]
+        n_colunas = len(_CABECALHOS_POR_ABA[nome])
+        assert all(ws.cell(1, c).protection.locked for c in range(1, n_colunas + 1)), f"{nome}: cabecalho tem que ser bloqueado"
+    # dados: 2 documentos em Documentos; 1 item; 1 campo; 1 aviso
+    for nome, n_linhas in (("Documentos", 2), ("Itens", 1), ("Campos adicionais", 1), ("Avisos", 1)):
+        ws = wb[nome]
+        for linha in range(2, n_linhas + 2):
+            for c in range(1, len(_CABECALHOS_POR_ABA[nome]) + 1):
+                assert not ws.cell(linha, c).protection.locked, f"{nome} {ws.cell(linha, c).coordinate} deveria ser livre"
+        for c in range(1, len(_CABECALHOS_POR_ABA[nome]) + 1):  # a linha logo abaixo (total, quando ha) e bloqueada
+            assert ws.cell(n_linhas + 2, c).protection.locked, f"{nome} {ws.cell(n_linhas + 2, c).coordinate} deveria ser bloqueada"
+
+
+def test_nenhuma_formula_do_arquivo_fica_desbloqueada():
+    """A razao de ser da trava: o =SUM dos totais (Itens e Documentos)."""
+    wb, _ = _abrir(*_lote_para_protecao())
+    formulas = [c for nome in wb.sheetnames for linha in wb[nome].iter_rows() for c in linha if c.data_type == "f"]
+    assert len(formulas) >= 3  # Itens: 2 (quantidade e valor); Documentos: 1 (total do lote)
+    assert all(c.protection.locked for c in formulas), [c.coordinate for c in formulas if not c.protection.locked]
+
+
+# ---------- grafico do lote (aba Documentos) ----------
+
+_NS_GRAFICO = {"c": "http://schemas.openxmlformats.org/drawingml/2006/chart",
+               "xdr": "http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing"}
+
+
+def _lote_com_valores(*valores):
+    return [_doc(arquivo=f"{i}.pdf", numero_documento=str(i), valor_total=v) for i, v in enumerate(valores, start=1)]
+
+
+def _xml(buffer, parte):
+    from xml.etree import ElementTree as ET
+
+    with zipfile.ZipFile(BytesIO(buffer.getvalue())) as z:
+        return ET.fromstring(z.read(parte)) if parte in z.namelist() else None
+
+
+def _formulas_da_serie(buffer):
+    grafico = _xml(buffer, "xl/charts/chart1.xml")
+    serie = grafico.find(".//c:ser", _NS_GRAFICO)
+    return {papel: serie.find(f"c:{papel}//c:f", _NS_GRAFICO).text for papel in ("tx", "cat", "val")}
+
+
+def test_lote_com_valores_numericos_gera_um_grafico_de_barras_de_valor_por_documento():
+    buffer = gerar_excel(_lote_com_valores(100.0, 50.5, 80.0))
+    letra_nome = get_column_letter(CABECALHOS_RESUMO.index("Documento") + 1)
+    letra_valor = get_column_letter(CABECALHOS_RESUMO.index("Valor total") + 1)
+    assert _formulas_da_serie(buffer) == {
+        "tx": f"'Documentos'!${letra_valor}$1",
+        "cat": f"'Documentos'!${letra_nome}$2:${letra_nome}$4",
+        "val": f"'Documentos'!${letra_valor}$2:${letra_valor}$4",
+    }
+    grafico = _xml(buffer, "xl/charts/chart1.xml")
+    assert grafico.find(".//c:barDir", _NS_GRAFICO).get("val") == "col"
+    # o que o grafico referencia e mesmo o que ele diz que e (nao so letras "certas")
+    ws = openpyxl.load_workbook(buffer)["Documentos"]
+    assert ws[f"{letra_valor}1"].value == "Valor total" and ws[f"{letra_nome}1"].value == "Documento"
+    assert [ws[f"{letra_valor}{r}"].value for r in (2, 3, 4)] == [100.0, 50.5, 80.0]
+    assert [ws[f"{letra_nome}{r}"].value for r in (2, 3, 4)] == ["Nota fiscal 1", "Nota fiscal 2", "Nota fiscal 3"]
+
+
+def test_grafico_nao_aparece_com_um_unico_documento():
+    buffer = gerar_excel(_lote_com_valores(100.0))
+    with zipfile.ZipFile(BytesIO(buffer.getvalue())) as z:
+        assert not [n for n in z.namelist() if n.startswith(("xl/charts/", "xl/drawings/drawing"))]
+
+
+def test_grafico_nao_aparece_com_dois_documentos_se_so_um_tem_valor_numerico():
+    """1 barra so seria enfeite -- vale o mesmo criterio do "2 ou mais"."""
+    buffer = gerar_excel(_lote_com_valores(100.0, "texto", None))
+    assert _xml(buffer, "xl/charts/chart1.xml") is None
+
+
+def test_grafico_deixa_de_fora_o_documento_cujo_valor_total_e_texto():
+    """O Excel plota texto como ZERO: incluir a linha mostraria uma barra
+    "R$ 0,00" que nao existe. Fica de fora, via uniao de intervalos."""
+    buffer = gerar_excel(_lote_com_valores(100.0, "texto que nao virou numero", 50.0, 70.0))
+    f = _formulas_da_serie(buffer)
+    assert f["val"] == "('Documentos'!$L$2,'Documentos'!$L$4:$L$5)"
+    assert f["cat"] == "('Documentos'!$C$2,'Documentos'!$C$4:$C$5)"  # mesmas linhas: categoria e valor alinhados
+
+
+def test_referencia_de_linhas_contigua_unitaria_com_lacuna_e_nome_de_aba_com_apostrofo():
+    from app.excel_exporter import _referencia_de_linhas
+
+    assert _referencia_de_linhas("Documentos", 12, [2, 3, 4]) == "'Documentos'!$L$2:$L$4"
+    assert _referencia_de_linhas("Documentos", 12, [5]) == "'Documentos'!$L$5"
+    assert _referencia_de_linhas("Documentos", 12, [2, 3, 6, 8, 9]) == "('Documentos'!$L$2:$L$3,'Documentos'!$L$6,'Documentos'!$L$8:$L$9)"
+    assert _referencia_de_linhas("Dado's", 1, [2]) == "'Dado''s'!$A$2"
+
+
+def test_grafico_fica_abaixo_da_linha_de_total_na_coluna_b_e_fora_da_tabela():
+    n = 4
+    buffer = gerar_excel(_lote_com_valores(*[10.0 * i for i in range(1, n + 1)]))
+    ancora = _xml(buffer, "xl/drawings/drawing1.xml").find("xdr:oneCellAnchor/xdr:from", _NS_GRAFICO)
+    col, linha = int(ancora.find("xdr:col", _NS_GRAFICO).text) + 1, int(ancora.find("xdr:row", _NS_GRAFICO).text) + 1
+    linha_total = n + 2
+    assert col == 2  # B: a coluna A (ID) e congelada, o grafico nao pode atravessar a divisa
+    assert linha == linha_total + 3  # 2 linhas em branco depois da linha de total
+    ws = openpyxl.load_workbook(buffer)["Documentos"]
+    assert ws.tables[NOMES_TABELA["Documentos"]].ref.endswith(f"{n + 1}")  # a tabela acaba antes do grafico
+
+
+def test_grafico_com_eixos_explicitos_sem_legenda_e_com_rotulo_de_valor():
+    grafico = _xml(gerar_excel(_lote_com_valores(100.0, 50.0)), "xl/charts/chart1.xml")
+    for eixo in ("catAx", "valAx"):
+        # openpyxl 3.1 nao escreve <delete>; sem ele o Excel 365 esconde o eixo
+        assert grafico.find(f".//c:{eixo}/c:delete", _NS_GRAFICO).get("val") == "0"
+    assert grafico.find(".//c:legend", _NS_GRAFICO) is None  # 1 serie so
+    assert grafico.find(".//c:ser/c:cat/c:strRef", _NS_GRAFICO) is not None  # nomes, nao numeros
+    assert grafico.find(".//c:ser/c:cat/c:numRef", _NS_GRAFICO) is None
+    rotulos = grafico.find(".//c:ser/c:dLbls", _NS_GRAFICO)
+    assert rotulos.find("c:showVal", _NS_GRAFICO).get("val") == "1"
+    for flag in ("showLegendKey", "showCatName", "showSerName", "showPercent", "showBubbleSize"):
+        assert rotulos.find(f"c:{flag}", _NS_GRAFICO).get("val") == "0", flag  # as omitidas o Excel pode ligar
+    assert grafico.find(".//c:title/c:overlay", _NS_GRAFICO).get("val") == "0"
+    assert "Valor total por documento" in "".join(grafico.find(".//c:title", _NS_GRAFICO).itertext())
+
+
+def test_grafico_fica_fora_da_area_de_impressao():
+    ws = _abrir(*_lote_com_valores(100.0, 50.0, 80.0))[0]["Documentos"]
+    assert ws.print_area.endswith("$5")  # cabecalho + 3 documentos + linha de total; o grafico (a partir da 8) nao entra
+
+
+# ---------- validacao de dados (listas suspensas) e formatacao condicional ----------
+
+
+def _lote_cobrindo_todos_os_estados():
+    """5 documentos, um de cada tipo interno; o 1o tem 5 campos adicionais,
+    um em cada estado de confianca (alta/media/baixa/corrigido/sem info)."""
+    campos = [{"campo": c, "valor": str(i)} for i, c in enumerate("ABCDE", start=1)]
+    return [
+        _doc(arquivo="1.pdf", tipo_documento="nota_fiscal", numero_documento="1", campos_adicionais=campos,
+             confiancas={"A": "alta", "B": "media", "C": "baixa"}, corrigidos={"D": "x"}),  # E: sem confianca
+        _doc(arquivo="2.pdf", tipo_documento="boleto", numero_documento="2"),
+        _doc(arquivo="3.pdf", tipo_documento="pedido_compra", numero_documento="3"),
+        _doc(arquivo="4.pdf", tipo_documento="relatorio", numero_documento="4"),
+        _doc(arquivo="5.pdf", tipo_documento="desconhecido"),
+    ]
+
+
+def _validacoes(ws):
+    return ws.data_validations.dataValidation
+
+
+def _regras(ws):
+    """[(sqref, formula, regra)] da formatacao condicional da aba."""
+    return [(str(cf.sqref), r.formula[0], r) for cf in ws.conditional_formatting for r in cf.rules]
+
+
+def test_tipo_tem_lista_suspensa_com_os_valores_internos_so_nas_linhas_de_dados():
+    ws = _abrir(*_lote_cobrindo_todos_os_estados())[0]["Documentos"]
+    (dv,) = _validacoes(ws)
+    assert dv.type == "list" and str(dv.sqref) == "D2:D6"  # 5 documentos; a linha 7 (total do lote) fica de fora
+    assert dv.formula1 == '"boleto,nota_fiscal,pedido_compra,relatorio,desconhecido"'  # internos, nao os rotulos amigaveis
+    assert VALORES_TIPO == ["boleto", "nota_fiscal", "pedido_compra", "relatorio", "desconhecido"]
+    assert dv.showDropDown in (None, False)  # True ESCONDERIA a seta (semantica invertida do formato)
+    assert dv.showErrorMessage and dv.errorStyle == "stop" and dv.allow_blank
+    assert "nota_fiscal" in dv.error  # a mensagem diz quais valores valem
+
+
+def test_confianca_dos_campos_adicionais_tem_lista_suspensa_com_o_dominio_real_da_coluna():
+    ws = _abrir(*_lote_cobrindo_todos_os_estados())[0]["Campos adicionais"]
+    (dv,) = _validacoes(ws)
+    assert dv.type == "list" and str(dv.sqref) == "E2:E6"
+    assert dv.formula1 == '"Alta,Média,Baixa,Corrigido,—"'
+    assert VALORES_CONFIANCA == ["Alta", "Média", "Baixa", "Corrigido", SEM_CONFIANCA]
+    assert dv.showDropDown in (None, False) and dv.showErrorMessage and dv.errorStyle == "stop"
+
+
+def test_todo_valor_que_o_exportador_escreve_nas_colunas_validadas_pertence_a_propria_lista():
+    """O arquivo nao pode violar a regra que ele mesmo carrega ("Circle invalid
+    data" do Excel marcaria o proprio conteudo gerado)."""
+    wb, _ = _abrir(*_lote_cobrindo_todos_os_estados())
+    tipos = [r["Tipo"] for r in _linhas_sem_total(wb["Documentos"])]
+    assert set(tipos) == set(VALORES_TIPO)  # o lote cobre os 5, e todos estao na lista
+    confiancas = [r["Confiança"] for r in _linhas(wb["Campos adicionais"])]
+    assert set(confiancas) == set(VALORES_CONFIANCA)  # idem: alta/media/baixa/corrigido/sem info
+
+
+def test_so_tipo_e_confianca_dos_campos_ganham_lista_suspensa():
+    """"Confiança geral" (Documentos) e uma proporcao em texto ("6 de 7 alta"),
+    nao um conjunto fechado -- lista suspensa ali seria errada."""
+    wb, _ = _abrir(*_lote_cobrindo_todos_os_estados())
+    assert [str(dv.sqref) for dv in _validacoes(wb["Documentos"])] == ["D2:D6"]
+    assert [str(dv.sqref) for dv in _validacoes(wb["Campos adicionais"])] == ["E2:E6"]
+    for nome in ("Relatório", "Itens", "Avisos"):
+        assert _validacoes(wb[nome]) == [], nome
+
+
+def test_aba_sem_dados_nao_tem_validacao_nem_regra_condicional():
+    wb, _ = _abrir(_doc(tipo_documento="boleto", numero_documento="1"))  # sem campos adicionais
+    ws = wb["Campos adicionais"]  # oculta: nao ha linha nenhuma pra validar/colorir
+    assert _validacoes(ws) == [] and _regras(ws) == []
+
+
+def test_lista_suspensa_recusa_o_que_o_excel_recusaria():
+    ws = openpyxl.Workbook().active
+    with pytest.raises(ValueError, match="virgula"):
+        _lista_suspensa(ws, "A2:A3", ["a,b", "c"])  # a virgula separaria em 3 itens
+    with pytest.raises(ValueError, match="limite"):
+        _lista_suspensa(ws, "A2:A3", ["x" * 100] * 3)  # 302 caracteres > 255
+
+
+def test_coluna_confianca_tem_regras_condicionais_nativas_por_texto():
+    ws = _abrir(*_lote_cobrindo_todos_os_estados())[0]["Campos adicionais"]
+    regras = _regras(ws)
+    assert {faixa for faixa, _, _ in regras} == {"E2:E6"}
+    por_texto = {formula: regra for _, formula, regra in regras}
+    assert set(por_texto) == {'"Média"', '"Baixa"', '"Corrigido"'}  # "Alta" e "—" nao pintam
+    assert all(r.type == "cellIs" and r.operator == "equal" for r in por_texto.values())
+    assert por_texto['"Média"'].dxf.fill.bgColor.rgb[-6:] == FUNDOS["media"]
+    assert por_texto['"Baixa"'].dxf.fill.bgColor.rgb[-6:] == FUNDOS["baixa"]
+    assert por_texto['"Corrigido"'].dxf.fill.bgColor.rgb[-6:] == FUNDOS["corrigido"]
+    assert por_texto['"Corrigido"'].dxf.font.i  # "corrigido" tambem em italico, como no fundo fixo
+    assert not por_texto['"Média"'].dxf.font and not por_texto['"Baixa"'].dxf.font
+
+
+def test_as_regras_condicionais_casam_exatamente_com_o_texto_que_o_exportador_escreve():
+    """Simula o Excel: pra cada celula da coluna, qual regra dispara. Pega o
+    erro silencioso de literal diferente do texto ("Media" sem acento na regra
+    contra "Média" na celula: a cor nunca apareceria e nada quebraria)."""
+    ws = _abrir(*_lote_cobrindo_todos_os_estados())[0]["Campos adicionais"]
+    regras = _regras(ws)
+
+    def cor_que_o_excel_aplicaria(texto):
+        for _, formula, regra in regras:
+            if formula.strip('"') == texto:
+                return regra.dxf.fill.bgColor.rgb[-6:]
+        return None
+
+    coluna = CABECALHOS_CAMPOS.index("Confiança") + 1
+    textos = [ws.cell(linha, coluna).value for linha in range(2, 7)]
+    assert textos == ["Alta", "Média", "Baixa", "Corrigido", SEM_CONFIANCA]
+    assert [cor_que_o_excel_aplicaria(t) for t in textos] == [None, "FDF3E0", "FBECEB", "E7F0EF", None]
+
+
+def test_celula_de_confianca_nao_tem_fundo_fixo_a_cor_vem_da_regra():
+    """Se sobrasse um fundo fixo, editar "Baixa" -> "Alta" deixaria a celula
+    vermelha (a regra deixa de disparar e o fundo antigo reaparece)."""
+    ws = _abrir(*_lote_cobrindo_todos_os_estados())[0]["Campos adicionais"]
+    coluna = CABECALHOS_CAMPOS.index("Confiança") + 1
+    fundos = {_fundo(ws.cell(linha, coluna)) for linha in range(2, 7)}
+    assert fundos <= {None, COR_ZEBRA}, fundos  # so a zebra (que a regra, quando dispara, sobrepoe)
+
+
+def test_valor_ao_lado_da_confianca_mantem_fundo_fixo_e_comentario_de_proveniencia():
+    """A cor do CAMPO documenta como ele foi extraido; reescrever o valor nao
+    pode apagar esse rastro. So a coluna Confianca (cujo texto e o proprio
+    valor) virou regra condicional."""
+    ws = _abrir(*_lote_cobrindo_todos_os_estados())[0]["Campos adicionais"]
+    coluna = CABECALHOS_CAMPOS.index("Valor") + 1
+    assert _fundo(ws.cell(3, coluna)) == FUNDOS["media"] and "média" in ws.cell(3, coluna).comment.text
+    assert _fundo(ws.cell(4, coluna)) == FUNDOS["baixa"]
+    assert _fundo(ws.cell(5, coluna)) == FUNDOS["corrigido"] and ws.cell(5, coluna).font.italic
 
 
 # ---------- Itens ----------
@@ -487,6 +781,63 @@ def test_linha_de_total_soma_quantidade_e_valor_total_ignorando_texto():
 def test_linha_de_total_ausente_quando_a_aba_itens_nao_tem_nenhum_item():
     ws = _abrir(_doc(numero_documento="1"))[0]["Itens"]
     assert ws.max_row == 1  # so cabecalho, sem linha de total
+
+
+# ---------- total do lote (aba Documentos) ----------
+
+
+def _lote_de_tres():
+    return [
+        _doc(arquivo="1.pdf", numero_documento="1", valor_total=100.0),
+        _doc(arquivo="2.pdf", tipo_documento="boleto", numero_documento="2", valor_total=50.5),
+        _doc(arquivo="3.pdf", numero_documento="3", valor_total="texto que nao virou numero"),
+    ]
+
+
+def test_total_do_lote_soma_o_valor_total_de_todos_os_documentos():
+    ws = _abrir(*_lote_de_tres())[0]["Documentos"]
+    col = CABECALHOS_RESUMO.index("Valor total") + 1
+    letra = get_column_letter(col)
+    linha_total = 5  # cabecalho + 3 documentos + esta
+    assert ws.max_row == linha_total
+    assert ws.cell(linha_total, col - 1).value == "Total do lote" and ws.cell(linha_total, col - 1).font.bold
+    total = ws.cell(linha_total, col)
+    assert total.value == f"=SUM({letra}2:{letra}4)"
+    assert total.data_type == "f"  # formula de verdade (e a unica celula assim na aba)
+    assert total.number_format == FORMATO_MOEDA and total.font.bold
+    # o 3o documento tem valor_total em TEXTO: continua texto (nao vira 0), e a soma o ignora
+    assert ws.cell(4, col).value == "texto que nao virou numero" and ws.cell(4, col).data_type == "s"
+
+
+def test_total_do_lote_fica_fora_da_tabela_e_a_soma_cobre_exatamente_as_linhas_dela():
+    ws = _abrir(*_lote_de_tres())[0]["Documentos"]
+    ultima_coluna = get_column_letter(len(CABECALHOS_RESUMO))
+    ref = ws.tables[NOMES_TABELA["Documentos"]].ref
+    assert ref == f"A1:{ultima_coluna}4"  # a linha de total (5) nao entra na Tabela/filtro
+    letra = get_column_letter(CABECALHOS_RESUMO.index("Valor total") + 1)
+    ultima_linha_da_tabela = int(ref.rsplit(":", 1)[1].lstrip("ABCDEFGHIJKLMNOPQRSTUVWXYZ"))
+    assert ws.cell(5, CABECALHOS_RESUMO.index("Valor total") + 1).value == f"=SUM({letra}2:{letra}{ultima_linha_da_tabela})"
+
+
+def test_total_do_lote_ausente_com_um_unico_documento():
+    ws = _abrir(_doc(numero_documento="1", valor_total=100.0))[0]["Documentos"]
+    assert ws.max_row == 2  # cabecalho + o documento, sem linha de total
+    assert all(c.data_type != "f" for linha in ws.iter_rows() for c in linha)
+    assert all(c.value != "Total do lote" for linha in ws.iter_rows() for c in linha)
+
+
+def test_total_do_lote_entra_na_area_de_impressao():
+    ws = _abrir(*_lote_de_tres())[0]["Documentos"]
+    assert ws.print_area == f"'Documentos'!$A$1:${get_column_letter(len(CABECALHOS_RESUMO))}$5"
+
+
+def test_total_do_lote_nao_e_lido_como_documento_pela_tabela_nomeada():
+    """Quem le pela Tabela (Power Query: Documentos[...]) so ve os documentos --
+    a linha de total esta fora da ref. Quem le a aba crua ve uma linha a mais,
+    com ID vazio (mesmo compromisso ja aceito na linha de total dos Itens)."""
+    ws = _abrir(*_lote_de_tres())[0]["Documentos"]
+    assert [r["ID"] for r in _linhas(ws)] == [1, 2, 3, None]
+    assert [r["ID"] for r in _linhas_sem_total(ws)] == [1, 2, 3]
 
 
 def test_nota_de_geracao_no_resumo_fora_da_tabela_e_do_filtro():

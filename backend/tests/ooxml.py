@@ -28,6 +28,8 @@ NS = {
     "r": "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
     "rel": "http://schemas.openxmlformats.org/package/2006/relationships",
     "ct": "http://schemas.openxmlformats.org/package/2006/content-types",
+    "xdr": "http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing",
+    "c": "http://schemas.openxmlformats.org/drawingml/2006/chart",
 }
 _R_ID = f"{{{NS['r']}}}id"
 _NOME_TABELA_RE = re.compile(r"^[A-Za-z_\\][A-Za-z0-9_.]*$")
@@ -131,6 +133,25 @@ def problemas(conteudo: bytes | BytesIO) -> list[str]:
                 if aba not in nomes_aba:
                     achados.append(f"definedName {dn.get('name')}: referencia aba inexistente {aba!r}")
 
+        # estilos diferenciais (usados pela formatacao condicional): a contagem
+        # declarada tem que bater e cada cfRule.dxfId tem que apontar pra um.
+        n_dxfs = 0
+        if "xl/styles.xml" in nomes:
+            dxfs = ET.fromstring(zf.read("xl/styles.xml")).find("m:dxfs", NS)
+            if dxfs is not None:
+                n_dxfs = len(dxfs.findall("m:dxf", NS))
+                if dxfs.get("count") is not None and int(dxfs.get("count")) != n_dxfs:
+                    achados.append(f"xl/styles.xml: dxfs count={dxfs.get('count')} mas ha {n_dxfs} dxf")
+
+        # indices de estilo (cellXfs) cuja celula e DESBLOQUEADA (<protection locked="0">)
+        desbloqueados: set[int] = set()
+        if "xl/styles.xml" in nomes:
+            xfs = ET.fromstring(zf.read("xl/styles.xml")).find("m:cellXfs", NS)
+            for i, xf in enumerate(xfs.findall("m:xf", NS) if xfs is not None else []):
+                prot = xf.find("m:protection", NS)
+                if prot is not None and prot.get("locked") in ("0", "false"):
+                    desbloqueados.add(i)
+
         ids_tabela: dict[str, str] = {}
         nomes_tabela: dict[str, str] = {}
         for nome_aba, parte in planilhas:
@@ -230,6 +251,211 @@ def problemas(conteudo: bytes | BytesIO) -> list[str]:
             solto = ws.find("m:autoFilter", NS)
             if solto is not None and any(_intersecta(_faixa(solto.get("ref")), f) for f in faixas_tabela):
                 achados.append(f"{parte}: autoFilter da aba cruza uma tabela (a tabela ja tem o proprio)")
+
+            achados += _protecao(ws, parte, celulas, desbloqueados, tem_tabela=bool(faixas_tabela))
+            achados += _validacoes_de_dados(ws, parte)
+            achados += _formatacao_condicional(ws, parte, n_dxfs)
+            achados += _graficos(zf, ws, parte, rels_ws, nomes_aba, faixas_tabela=faixas_tabela)
+    return achados
+
+
+# Referencia de celulas de grafico: 'Aba'!$L$2:$L$6, 'Aba'!$L$2 ou a uniao
+# entre parenteses ('Aba'!$L$2:$L$3,'Aba'!$L$5).
+_AREA_RE = re.compile(
+    r"(?:'((?:[^']|'')+)'|([A-Za-z_][\w.]*))!\$?([A-Za-z]{1,3})\$?(\d+)(?::\$?([A-Za-z]{1,3})\$?(\d+))?"
+)
+
+
+def _areas(formula: str) -> tuple[list[tuple[str, tuple[int, int, int, int]]], str]:
+    """([(aba, faixa)], resto_nao_reconhecido) de uma referencia de grafico."""
+    areas = []
+    for m in _AREA_RE.finditer(formula):
+        aba = (m.group(1) or m.group(2)).replace("''", "'")
+        col1, lin1 = _col_num(m.group(3)), int(m.group(4))
+        col2, lin2 = (_col_num(m.group(5)), int(m.group(6))) if m.group(5) else (col1, lin1)
+        areas.append((aba, (col1, lin1, col2, lin2)))
+    return areas, _AREA_RE.sub("", formula).strip("(), ")
+
+
+def _n_celulas(areas) -> int:
+    return sum((f[2] - f[0] + 1) * (f[3] - f[1] + 1) for _, f in areas)
+
+
+_FLAGS_DLBLS = ("showLegendKey", "showVal", "showCatName", "showSerName", "showPercent", "showBubbleSize")
+
+
+def _graficos(zf, ws, parte: str, rels_ws, nomes_aba: list[str], faixas_tabela) -> list[str]:
+    """Graficos da aba: regras que o Excel aplica alem do schema (ver o
+    docstring do modulo). Cada uma existe por um problema real do
+    openpyxl 3.1 ou do formato -- o motivo esta na mensagem."""
+    achados: list[str] = []
+    desenho = ws.find("m:drawing", NS)
+    if desenho is None:
+        return achados
+    if desenho.get(_R_ID) not in rels_ws:
+        return [f"{parte}: <drawing> {desenho.get(_R_ID)} sem relacionamento"]
+    parte_desenho = rels_ws[desenho.get(_R_ID)][1]
+    if parte_desenho not in zf.namelist():
+        return achados  # a regra generica de relacionamentos ja acusou
+    desenho_xml = ET.fromstring(zf.read(parte_desenho))
+    rels_desenho = _rels(zf, parte_desenho)
+
+    # o grafico nao pode ser ancorado em cima de uma tabela (esconderia os dados)
+    for ancora in list(desenho_xml):
+        de = ancora.find("xdr:from", NS)
+        if de is not None:
+            col, lin = int(de.find("xdr:col", NS).text) + 1, int(de.find("xdr:row", NS).text) + 1
+            if any(f[0] <= col <= f[2] and f[1] <= lin <= f[3] for f in faixas_tabela):
+                achados.append(f"{parte_desenho}: grafico ancorado em cima de uma tabela (celula {_letra(col)}{lin})")
+
+    for quadro in desenho_xml.iter(f"{{{NS['c']}}}chart"):
+        rid = quadro.get(_R_ID)
+        if rid not in rels_desenho:
+            achados.append(f"{parte_desenho}: grafico {rid} sem relacionamento")
+            continue
+        parte_grafico = rels_desenho[rid][1]
+        if parte_grafico not in zf.namelist():
+            continue
+        grafico = ET.fromstring(zf.read(parte_grafico))
+        onde = parte_grafico
+
+        for serie in grafico.iter(f"{{{NS['c']}}}ser"):
+            contagens = {}
+            for papel in ("tx", "cat", "val"):
+                for f in serie.findall(f"c:{papel}//c:f", NS):
+                    areas, resto = _areas(f.text or "")
+                    if not areas or resto:
+                        achados.append(f"{onde}: referencia {f.text!r} de {papel} nao reconhecida")
+                        continue
+                    for aba, faixa in areas:
+                        if aba not in nomes_aba:
+                            achados.append(f"{onde}: {papel} referencia a aba inexistente {aba!r}")
+                        if faixa[2] < faixa[0] or faixa[3] < faixa[1]:
+                            achados.append(f"{onde}: intervalo invertido em {f.text!r}")
+                    contagens[papel] = _n_celulas(areas)
+            if "cat" in contagens and "val" in contagens and contagens["cat"] != contagens["val"]:
+                achados.append(f"{onde}: serie com {contagens['cat']} categoria(s) e {contagens['val']} valor(es)")
+            rotulos = serie.find("c:dLbls", NS)
+            if rotulos is not None and rotulos.find("c:delete", NS) is None:
+                faltando = [f for f in _FLAGS_DLBLS if rotulos.find(f"c:{f}", NS) is None]
+                if faltando:
+                    achados.append(f"{onde}: dLbls sem as flags {faltando} (o Excel pode ligar as omitidas)")
+
+        eixos = {}
+        for tipo in ("catAx", "valAx", "dateAx", "serAx"):
+            for eixo in grafico.iter(f"{{{NS['c']}}}{tipo}"):
+                eixos[eixo.find("c:axId", NS).get("val")] = eixo
+        area_do_grafico = grafico.find("c:chart/c:plotArea", NS)
+        for plot in (list(area_do_grafico) if area_do_grafico is not None else []):
+            for ax in plot.findall("c:axId", NS):
+                if ax.get("val") not in eixos:
+                    achados.append(f"{onde}: axId {ax.get('val')} usado pelo grafico mas nao definido")
+        for ident, eixo in eixos.items():
+            cruza = eixo.find("c:crossAx", NS)
+            if cruza is None or cruza.get("val") not in eixos:
+                achados.append(f"{onde}: eixo {ident} cruza um eixo inexistente")
+            apagado = eixo.find("c:delete", NS)
+            # openpyxl 3.1 nao escreve <delete>; o Excel 365 entao esconde o eixo
+            if apagado is None or apagado.get("val") not in ("0", "false"):
+                achados.append(f"{onde}: eixo {ident} sem <delete val=0> explicito (o eixo some no Excel 365)")
+
+        titulo = grafico.find("c:chart/c:title", NS)
+        if titulo is not None and titulo.find("c:overlay", NS) is None:
+            achados.append(f"{onde}: titulo sem <overlay val=0> (pode ser desenhado por cima do grafico)")
+    return achados
+
+
+def _protecao(ws, parte: str, celulas: dict, desbloqueados: set[int], tem_tabela: bool) -> list[str]:
+    """So vale em aba PROTEGIDA (<sheetProtection sheet="1">). O formato usa
+    semantica invertida: autoFilter="1" (o padrao) significa filtro BLOQUEADO."""
+    achados: list[str] = []
+    protecao = ws.find("m:sheetProtection", NS)
+    if protecao is None or protecao.get("sheet") not in ("1", "true"):
+        return achados
+    for ref, c in celulas.items():
+        if c.find("m:f", NS) is not None and int(c.get("s", 0)) in desbloqueados:
+            achados.append(f"{parte}: formula em {ref} desbloqueada numa aba protegida (a trava nao protege o total)")
+    if tem_tabela:
+        for atributo, o_que in (("autoFilter", "as setas de filtro da Tabela"), ("sort", "a ordenacao da Tabela")):
+            if protecao.get(atributo, "1") in ("1", "true"):  # ausente = padrao do formato = bloqueado
+                achados.append(f"{parte}: aba protegida com Tabela e {atributo} bloqueado ({o_que} ficaria inutilizavel)")
+    return achados
+
+
+# Limites do Excel para validacao de dados: passar deles nao e erro de schema,
+# mas o Excel remove a validacao inteira e oferece "reparar".
+_LIMITE_LISTA_LITERAL = 255
+_LIMITE_TITULO = 32
+_LIMITE_MENSAGEM = 255
+
+
+def _validacoes_de_dados(ws, parte: str) -> list[str]:
+    achados: list[str] = []
+    bloco = ws.find("m:dataValidations", NS)
+    if bloco is None:
+        return achados
+    itens = bloco.findall("m:dataValidation", NS)
+    if bloco.get("count") is not None and int(bloco.get("count")) != len(itens):
+        achados.append(f"{parte}: dataValidations count={bloco.get('count')} mas ha {len(itens)} dataValidation")
+    faixas_vistas: list[tuple[int, int, int, int]] = []
+    for dv in itens:
+        sqref = (dv.get("sqref") or "").split()
+        if not sqref:
+            achados.append(f"{parte}: dataValidation sem sqref")
+        for pedaco in sqref:
+            faixa = _faixa(pedaco)
+            if any(_intersecta(faixa, outra) for outra in faixas_vistas):
+                achados.append(f"{parte}: dataValidation {pedaco} sobrepoe outra validacao da aba (Excel pede reparo)")
+            faixas_vistas.append(faixa)
+        if dv.get("type") == "list":
+            if dv.get("showDropDown") in ("1", "true"):
+                achados.append(f"{parte}: dataValidation {dv.get('sqref')} com showDropDown=1 (no formato isso ESCONDE a seta da lista)")
+            f1 = dv.find("m:formula1", NS)
+            texto = (f1.text or "").strip() if f1 is not None else ""
+            if not texto:
+                achados.append(f"{parte}: dataValidation {dv.get('sqref')} do tipo list sem formula1")
+            elif texto.startswith('"') and texto.endswith('"') and len(texto) - 2 > _LIMITE_LISTA_LITERAL:
+                achados.append(f"{parte}: lista literal de {len(texto) - 2} caracteres (limite do Excel: {_LIMITE_LISTA_LITERAL})")
+        for atributo, limite in (
+            ("errorTitle", _LIMITE_TITULO), ("promptTitle", _LIMITE_TITULO), ("error", _LIMITE_MENSAGEM), ("prompt", _LIMITE_MENSAGEM),
+        ):
+            valor = dv.get(atributo)
+            if valor is not None and len(valor) > limite:
+                achados.append(f"{parte}: dataValidation {atributo} com {len(valor)} caracteres (limite do Excel: {limite})")
+    return achados
+
+
+def _formatacao_condicional(ws, parte: str, n_dxfs: int) -> list[str]:
+    achados: list[str] = []
+    prioridades: set[str] = set()
+    for cf in ws.findall("m:conditionalFormatting", NS):
+        if not (cf.get("sqref") or "").strip():
+            achados.append(f"{parte}: conditionalFormatting sem sqref")
+        for regra in cf.findall("m:cfRule", NS):
+            tipo, dxf, prioridade = regra.get("type"), regra.get("dxfId"), regra.get("priority")
+            onde = f"{parte}: cfRule {tipo} em {cf.get('sqref')}"
+            if dxf is None:
+                if tipo in ("cellIs", "expression"):
+                    achados.append(f"{onde} sem dxfId (a regra nao pintaria nada)")
+            elif not (0 <= int(dxf) < n_dxfs):
+                achados.append(f"{onde} com dxfId={dxf}, mas styles.xml tem {n_dxfs} dxf")
+            if prioridade is None:
+                achados.append(f"{onde} sem priority")
+            elif prioridade in prioridades:
+                achados.append(f"{onde} com priority={prioridade} repetida na aba")
+            else:
+                prioridades.add(prioridade)
+            formulas = regra.findall("m:formula", NS)
+            if tipo == "cellIs":
+                operador = regra.get("operator")
+                if not operador:
+                    achados.append(f"{onde} sem operator")
+                esperado = 2 if operador in ("between", "notBetween") else 1
+                if len(formulas) != esperado:
+                    achados.append(f"{onde}: {len(formulas)} formula(s), esperado {esperado} pro operador {operador!r}")
+            for f in formulas:
+                if not (f.text or "").strip():
+                    achados.append(f"{onde} com <formula> vazia")
     return achados
 
 

@@ -75,6 +75,28 @@ CENARIOS = {
         _doc(arquivo="2.pdf", tipo_documento="boleto", numero_documento="2", avisos=["x"]),
         _doc(arquivo="3.pdf", tipo_documento="desconhecido"),
     ],
+    "lote de 5 tipos variados (com grafico, total, listas e regras)": [
+        _doc(arquivo="nf1.pdf", numero_documento="000012345", valor_total=2290.0, data_emissao="15/04/2026",
+             emissor="COMERCIAL ALFA LTDA (CNPJ 11.222.333/0001-81)", destinatario="FULANO DE TAL (CPF 000.000.000-00)",
+             itens=[{"descricao": "Mochila", "quantidade": 2.0, "valor_unitario": 1145.0, "valor_total": 2290.0}],
+             campos_adicionais=[{"campo": "CFOP", "valor": "5102"}, {"campo": "Chave de Acesso", "valor": CHAVE_44}],
+             confiancas={"itens": "media", "CFOP": "media", "emissor": "alta"}),
+        _doc(arquivo="bol1.pdf", tipo_documento="boleto", numero_documento="778", valor_total=900.0,
+             data_vencimento="10/05/2026", emissor="ESCOLA BETA (CNPJ 22.333.444/0001-55)",
+             campos_adicionais=[{"campo": "Nosso Número", "valor": "10200000001-9"}],
+             confiancas={"valor_total": "alta", "Nosso Número": "baixa"}),
+        _doc(arquivo="nf2.pdf", numero_documento="000054321", valor_total=15480.75, avisos=["a soma dos itens nao bate"],
+             confiancas={"valor_total": "media"}, corrigidos={"numero_documento": "000054320"}),
+        _doc(arquivo="ped.pdf", tipo_documento="pedido_compra", numero_documento="PC-77", valor_total=4320.0),
+        _doc(arquivo="bol2.pdf", tipo_documento="boleto", numero_documento="779", valor_total=1150.0,
+             data_vencimento="20/05/2026"),
+    ],
+    "lote com valor em texto (grafico sem esse documento, com uniao de intervalos)": [
+        _doc(arquivo="1.pdf", numero_documento="1", valor_total=100.0),
+        _doc(arquivo="2.pdf", numero_documento="2", valor_total="texto que nao virou numero"),
+        _doc(arquivo="3.pdf", numero_documento="3", valor_total=50.0),
+        _doc(arquivo="4.pdf", numero_documento="4", valor_total=70.0),
+    ],
     "texto hostil (formula, controle, gigante)": [
         _doc(emissor='=HYPERLINK("http://x","y")', destinatario="A\x00B\x0bC", numero_documento="X" * 40000,
              itens=[{"descricao": "=SUM(A1:A2)"}], avisos=["=cmd|' /C calc'!A0"])
@@ -146,6 +168,174 @@ def test_verificador_acusa_cabecalho_divergente_e_tabela_sobre_celula_mesclada()
     achados = ooxml.problemas(saida.getvalue())
     assert any("difere de tableColumn" in a for a in achados)
     assert any("cruza celulas mescladas" in a for a in achados)
+
+
+def _com_validacao(**kwargs):
+    from openpyxl.worksheet.datavalidation import DataValidation
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["A"])
+    ws.append(["x"])
+    dv = DataValidation(type="list", formula1=kwargs.pop("formula1", '"a,b"'), **kwargs)
+    dv.add(kwargs.pop("faixa", "A2"))
+    ws.add_data_validation(dv)
+    return wb, ws
+
+
+def test_verificador_aceita_validacao_de_dados_correta():
+    wb, _ = _com_validacao(allow_blank=True, showErrorMessage=True, errorTitle="Valor inválido", error="Escolha da lista")
+    assert ooxml.problemas(_salvar(wb)) == []
+
+
+@pytest.mark.parametrize(
+    "kwargs, trecho",
+    [
+        ({"formula1": '"' + ",".join(["item"] * 60) + '"'}, "lista literal"),  # 299 caracteres
+        ({"showDropDown": True}, "ESCONDE a seta"),
+        ({"errorTitle": "T" * 33}, "errorTitle"),
+        ({"error": "E" * 256}, "error com"),
+        ({"formula1": None}, "sem formula1"),
+    ],
+)
+def test_verificador_acusa_validacao_de_dados_fora_dos_limites_do_excel(kwargs, trecho):
+    wb, _ = _com_validacao(**kwargs)
+    assert any(trecho in a for a in ooxml.problemas(_salvar(wb)))
+
+
+def test_verificador_acusa_validacoes_sobrepostas():
+    from openpyxl.worksheet.datavalidation import DataValidation
+
+    wb, ws = _com_validacao()
+    outra = DataValidation(type="list", formula1='"c,d"')
+    outra.add("A2:A5")  # cobre A2, que ja tem a primeira validacao
+    ws.add_data_validation(outra)
+    assert any("sobrepoe outra validacao" in a for a in ooxml.problemas(_salvar(wb)))
+
+
+def _adulterar(conteudo: bytes, parte_prefixo: str, de: bytes, para: bytes) -> bytes:
+    from io import BytesIO
+
+    entrada, saida = zipfile.ZipFile(BytesIO(conteudo)), BytesIO()
+    with zipfile.ZipFile(saida, "w") as z:
+        for item in entrada.infolist():
+            dados = entrada.read(item.filename)
+            if item.filename.startswith(parte_prefixo):
+                dados = dados.replace(de, para)
+            z.writestr(item, dados)
+    return saida.getvalue()
+
+
+def _com_regra_condicional() -> bytes:
+    from openpyxl.formatting.rule import CellIsRule
+    from openpyxl.styles import PatternFill
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws["A1"] = "x"
+    ws.conditional_formatting.add(
+        "A1:A3", CellIsRule(operator="equal", formula=['"x"'], fill=PatternFill("solid", start_color="FF0000", end_color="FF0000"))
+    )
+    return _salvar(wb)
+
+
+def test_verificador_aceita_formatacao_condicional_correta():
+    assert ooxml.problemas(_com_regra_condicional()) == []
+
+
+@pytest.mark.parametrize(
+    "parte, de, para, trecho",
+    [
+        ("xl/worksheets/sheet1.xml", b'dxfId="0"', b'dxfId="7"', "dxfId=7"),  # aponta pra dxf que nao existe
+        ("xl/worksheets/sheet1.xml", b' operator="equal"', b"", "sem operator"),
+        ("xl/worksheets/sheet1.xml", b' dxfId="0"', b"", "sem dxfId"),
+        ("xl/worksheets/sheet1.xml", b'<formula>"x"</formula>', b"", "formula(s)"),
+        ("xl/styles.xml", b'<dxfs count="1">', b'<dxfs count="4">', "dxfs count=4"),
+    ],
+)
+def test_verificador_acusa_formatacao_condicional_invalida(parte, de, para, trecho):
+    conteudo = _com_regra_condicional()
+    adulterado = _adulterar(conteudo, parte, de, para)
+    assert adulterado != conteudo, "a adulteracao nao encontrou o trecho (teste desatualizado)"
+    assert any(trecho in a for a in ooxml.problemas(adulterado))
+
+
+def _protegida(formula_desbloqueada=False, **protecao) -> bytes:
+    from openpyxl.styles import Protection
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["ID", "Valor"])
+    ws.append([1, 10.0])
+    ws.append([2, 20.0])
+    ws.add_table(Table(displayName="T", ref="A1:B3"))
+    ws["B4"] = "=SUM(B2:B3)"
+    if formula_desbloqueada:
+        ws["B4"].protection = Protection(locked=False)
+    ws.protection.sheet = True
+    ws.protection.autoFilter = protecao.get("autoFilter", False)
+    ws.protection.sort = protecao.get("sort", False)
+    return _salvar(wb)
+
+
+def test_verificador_aceita_aba_protegida_com_filtro_liberado_e_formula_bloqueada():
+    assert ooxml.problemas(_protegida()) == []
+
+
+def test_verificador_acusa_formula_desbloqueada_em_aba_protegida():
+    assert any("desbloqueada numa aba protegida" in a for a in ooxml.problemas(_protegida(formula_desbloqueada=True)))
+
+
+@pytest.mark.parametrize("atributo, trecho", [("autoFilter", "autoFilter bloqueado"), ("sort", "sort bloqueado")])
+def test_verificador_acusa_aba_protegida_com_tabela_e_filtro_ou_ordenacao_bloqueados(atributo, trecho):
+    assert any(trecho in a for a in ooxml.problemas(_protegida(**{atributo: True})))
+
+
+def test_verificador_nao_cobra_nada_de_aba_sem_protecao():
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["ID"])
+    ws.append([1])
+    ws.add_table(Table(displayName="T", ref="A1:A2"))
+    ws["A3"] = "=SUM(A2:A2)"
+    assert ooxml.problemas(_salvar(wb)) == []
+
+
+def _com_grafico() -> bytes:
+    return gerar_excel(CENARIOS["lote de 5 tipos variados (com grafico, total, listas e regras)"]).getvalue()
+
+
+def test_verificador_aceita_o_grafico_gerado():
+    assert ooxml.problemas(_com_grafico()) == []
+
+
+@pytest.mark.parametrize(
+    "parte, de, para, trecho",
+    [
+        # serie com menos categorias do que valores
+        ("xl/charts/", b"$C$2:$C$6", b"$C$2:$C$5", "categoria(s)"),
+        # referencia a uma aba que nao existe
+        ("xl/charts/", b"<f>'Documentos'!$L$2:$L$6</f>", b"<f>'Inexistente'!$L$2:$L$6</f>", "aba inexistente"),
+        # intervalo que o verificador nao entende
+        ("xl/charts/", b"<f>'Documentos'!$L$2:$L$6</f>", b"<f>Documentos!L2..L6</f>", "nao reconhecida"),
+        # eixo sem <delete val=0>: o bug do openpyxl 3.1 (eixo some no Excel 365)
+        ("xl/charts/", b'<delete val="0" />', b"", "eixo"),
+        # rotulo de valor com uma flag a menos
+        ("xl/charts/", b'<showBubbleSize val="0" />', b"", "dLbls sem as flags"),
+        # titulo sem overlay explicito
+        ("xl/charts/", b'<overlay val="0" />', b"", "overlay"),
+        # eixo que cruza um eixo que nao existe
+        ("xl/charts/", b'<crossAx val="10" />', b'<crossAx val="77" />', "cruza um eixo inexistente"),
+        # grafico ancorado dentro da tabela (linha 2), escondendo os dados
+        # (com 5 documentos a ancora original e a linha 10 = <row>9</row>, 0-based)
+        ("xl/drawings/drawing", b"<row>9</row>", b"<row>1</row>", "em cima de uma tabela"),
+    ],
+)
+def test_verificador_acusa_grafico_quebrado(parte, de, para, trecho):
+    conteudo = _com_grafico()
+    adulterado = _adulterar(conteudo, parte, de, para)
+    assert adulterado != conteudo, "a adulteracao nao encontrou o trecho (teste desatualizado)"
+    assert any(trecho in a for a in ooxml.problemas(adulterado)), ooxml.problemas(adulterado)
 
 
 # ---------- validador oficial da Microsoft (opt-in) ----------

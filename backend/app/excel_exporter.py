@@ -70,6 +70,23 @@ Acabamento "senior" (etapa 8), tambem so apresentacao:
   estrutura do schema), pra dar um numero de verdade pra comparar com a
   soma dos itens em vez de so confiar no texto do aviso.
 
+Recursos nativos do Excel (etapa 10) -- detalhes e motivos nas docstrings de
+cada funcao:
+- Total do lote (`_escrever_linha_total_documentos`) e grafico de barras de
+  Valor total por documento (`_grafico_valor_por_documento`): so com 2+
+  documentos (2+ com valor numerico, no caso do grafico).
+- Listas suspensas (`_lista_suspensa`) em Documentos!Tipo e Campos
+  adicionais!Confianca -- as unicas colunas com conjunto fechado de valores.
+- Formatacao condicional nativa SO na coluna Confianca de Campos adicionais
+  (`_colorir_coluna_confianca`), onde o texto da celula e o proprio valor. Nas
+  demais celulas destacadas a cor documenta a PROVENIENCIA da extracao e
+  continua fixa: reescrever o campo nao pode apagar o rastro de "veio com
+  confianca baixa". Cogitado e DESCARTADO trocar todos os destaques por
+  regras: a maioria das celulas destacadas (Emissor, Valor total, Itens) nao
+  tem, na propria linha, o dado de confianca que uma regra poderia ler.
+- Protecao de planilha sem senha (`_proteger_planilha`): cabecalho e totais
+  travados, dados livres, filtro/ordenacao liberados.
+
 Decisao importante: NAO existe linha de titulo mesclada acima do cabecalho.
 Foi cogitada e testada (empiricamente, com pandas.read_excel simulando um
 leitor automatico tipo Power Query) e DESCARTADA: auto_filter e freeze_panes
@@ -91,9 +108,17 @@ from io import BytesIO
 from typing import Any, Optional
 
 from openpyxl import Workbook
+from openpyxl.chart import BarChart
+from openpyxl.chart.data_source import AxDataSource, NumDataSource, NumRef, StrRef
+from openpyxl.chart.label import DataLabelList
+from openpyxl.chart.series import Series, SeriesLabel
+from openpyxl.chart.shapes import GraphicalProperties
 from openpyxl.comments import Comment
-from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.drawing.line import LineProperties
+from openpyxl.formatting.rule import CellIsRule
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Protection, Side
 from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.datavalidation import DataValidation
 from openpyxl.worksheet.pagebreak import Break
 from openpyxl.worksheet.table import Table, TableStyleInfo
 
@@ -131,6 +156,7 @@ ROTULOS_TIPO = {
     "desconhecido": "Desconhecido",
 }
 ROTULOS_NIVEL = {"alta": "Alta", "media": "Média", "baixa": "Baixa", "corrigido": "Corrigido"}
+SEM_CONFIANCA = "—"  # campo sem informacao de confianca (ex: modo IA)
 
 # Campos adicionais que sao VALOR MONETARIO (viram numero). O resto e codigo/texto.
 CAMPOS_MONETARIOS = {"Valor do Documento", "Desconto", "Valor a Pagar", "Valor Total dos Produtos"}
@@ -387,13 +413,15 @@ def _linhas_campos(id_doc: int, doc: DocumentoParaExportar, rotulo: str) -> list
             nivel = "corrigido"
         else:
             nivel = doc.resultado.confiancas.get(chave)
-        texto_nivel = ROTULOS_NIVEL.get(nivel, "—") if nivel in NIVEIS or nivel == "corrigido" else "—"
+        texto_nivel = ROTULOS_NIVEL.get(nivel, SEM_CONFIANCA) if nivel in NIVEIS or nivel == "corrigido" else SEM_CONFIANCA
         linhas.append([
             Celula(id_doc, "0"),
             Celula(rotulo),
             Celula(chave),
             celula_valor,
-            Celula(texto_nivel, None, estado),
+            # SEM fundo fixo: a cor desta coluna vem de regras de formatacao
+            # condicional sobre o proprio texto (ver _colorir_coluna_confianca)
+            Celula(texto_nivel),
         ])
     return linhas
 
@@ -496,6 +524,7 @@ def _escrever_aba(ws, cabecalhos: list[str], linhas: list[list[Celula]], nome_ta
             else:
                 celula.alignment = Alignment(horizontal="left", vertical="center")
             celula.border = borda
+            celula.protection = Protection(locked=False)  # dado editavel; ver _proteger_planilha
 
             if dados.estado in FUNDOS:
                 cor = FUNDOS[dados.estado]
@@ -585,6 +614,209 @@ def _escrever_linha_total_itens(ws, n_itens: int) -> None:
             celula.number_format = formato
         celula.font = _fonte(negrito=True)
         celula.alignment = Alignment(horizontal="right", vertical="center", indent=1)
+
+
+def _escrever_linha_total_documentos(ws, n_documentos: int) -> None:
+    """Total do LOTE ao final da aba Documentos: soma de "Valor total" com
+    `=SUM` (ignora texto, igual aos Itens: um valor que nao virou numero nao
+    quebra a soma). So e chamada com 2+ documentos -- com 1, o total seria o
+    proprio valor da unica linha, ruido.
+
+    Mesmo padrao dos Itens (linha logo abaixo da Tabela, FORA da ref dela),
+    mas SEM celulas mescladas: o rotulo fica na coluna imediatamente antes do
+    Valor total, alinhado a direita. Mesclar A:K atravessaria a divisa do
+    congelamento (`freeze_panes = "B2"`) numa faixa larga, e nao ha ganho
+    visual que compense."""
+    col_total = CABECALHOS_RESUMO.index("Valor total") + 1
+    linha_total = n_documentos + 2
+
+    borda_topo = Border(top=Side(style="thin", color=COR_BORDA))
+    for coluna in range(1, len(CABECALHOS_RESUMO) + 1):
+        ws.cell(row=linha_total, column=coluna).border = borda_topo
+
+    rotulo = ws.cell(row=linha_total, column=col_total - 1, value="Total do lote")
+    rotulo.font = _fonte(negrito=True)
+    rotulo.alignment = Alignment(horizontal="right", vertical="center", indent=1)
+
+    letra = get_column_letter(col_total)
+    total = ws.cell(row=linha_total, column=col_total, value=f"=SUM({letra}2:{letra}{n_documentos + 1})")
+    total.number_format = FORMATO_MOEDA
+    total.font = _fonte(negrito=True, cor=COR_DESTAQUE_VALOR_TOTAL, tamanho=TAMANHO_FONTE_VALOR_TOTAL)
+    total.alignment = Alignment(horizontal="right", vertical="center", indent=1)
+
+
+# ---------- protecao de planilha (etapa 10) ----------
+
+
+def _proteger_planilha(ws) -> None:
+    """Trava contra engano, SEM senha (Revisao > Desproteger planilha, 1
+    clique): cabecalho, linhas de total (formulas) e tudo fora da tabela ficam
+    bloqueados; so as celulas de dado (desbloqueadas em `_escrever_aba`)
+    aceitam edicao. Protecao nao e criptografia nem seguranca -- e so o aviso
+    do Excel antes de alguem apagar um `=SUM` sem querer.
+
+    A semantica dos atributos no formato e INVERTIDA: `autoFilter=False`
+    significa filtro LIBERADO (`autoFilter="0"` no XML). Prioridade do projeto:
+    filtro e ordenacao da Tabela funcionando valem mais do que a trava --
+    por isso os dois sao liberados, e o verificador (tests/ooxml.py) acusa uma
+    aba protegida com Tabela e filtro bloqueado. Colunas e linhas tambem podem
+    ser redimensionadas. Graficos ficam editaveis (`objects` desligado): quem
+    monta uma apresentacao precisa selecionar e copiar. Consequencia
+    conhecida: com a aba protegida a Tabela nao cresce (nao da pra digitar uma
+    linha nova embaixo dela) -- e preciso desproteger antes."""
+    ws.protection.sheet = True
+    ws.protection.autoFilter = False
+    ws.protection.sort = False
+    ws.protection.formatColumns = False
+    ws.protection.formatRows = False
+
+
+# ---------- grafico do lote (etapa 10) ----------
+TITULO_GRAFICO = "Valor total por documento"
+MINIMO_DOCUMENTOS_NO_GRAFICO = 2
+LARGURA_GRAFICO_CM, ALTURA_GRAFICO_CM = 24, 9.5
+LINHAS_ENTRE_TOTAL_E_GRAFICO = 2
+
+
+def _referencia_de_linhas(nome_aba: str, coluna: int, linhas: list[int]) -> str:
+    """Referencia de celulas de UMA coluna nas `linhas` dadas (ordenadas):
+    `'Documentos'!$L$2:$L$6` quando sao contiguas -- o caso normal -- ou, com
+    lacunas, a uniao entre parenteses `('Documentos'!$L$2:$L$3,'Documentos'!$L$5)`
+    (o Excel aceita e grava exatamente assim). Existe pra deixar de fora do
+    grafico o documento cujo Valor total e texto: o Excel plota texto como
+    ZERO, o que mostraria uma barra "R$ 0,00" que nao existe."""
+    letra = get_column_letter(coluna)
+    aba = "'" + nome_aba.replace("'", "''") + "'"
+    faixas: list[list[int]] = []
+    for linha in linhas:
+        if faixas and linha == faixas[-1][-1] + 1:
+            faixas[-1].append(linha)
+        else:
+            faixas.append([linha])
+    partes = [
+        f"{aba}!${letra}${f[0]}" if len(f) == 1 else f"{aba}!${letra}${f[0]}:${letra}${f[-1]}" for f in faixas
+    ]
+    return partes[0] if len(partes) == 1 else "(" + ",".join(partes) + ")"
+
+
+def _grafico_valor_por_documento(ws, resumo: list[list[Celula]]) -> bool:
+    """Grafico de barras "Valor total por documento" ABAIXO da tabela (e da
+    linha de total), so quando ha 2+ documentos com Valor total numerico --
+    com 1 barra so, o grafico seria enfeite. Devolve se foi criado.
+
+    - Le direto das celulas da aba (nada de tabela auxiliar oculta): editar um
+      valor na planilha atualiza o grafico, e filtrar a Tabela (linhas
+      ocultas) tambem (`plotVisOnly`, o padrao).
+    - Ancorado na coluna B, nao na A: a A (ID) esta congelada, e um grafico
+      atravessando a divisa do congelamento ficaria cortado ao rolar.
+    - FORA da area de impressao de proposito (que e "so a tabela real"): um
+      grafico pode cair sobre a quebra de pagina e sair cortado.
+    - Eixos com `delete=False` EXPLICITO: o openpyxl 3.1 nao escreve o
+      elemento, e o Excel 365 entao esconde os eixos. Categorias como
+      `strRef` (sao nomes, nao numeros). Rotulo de valor em cada barra, com
+      as 6 flags de `dLbls` explicitas (as omitidas o Excel pode ligar)."""
+    col_valor = CABECALHOS_RESUMO.index("Valor total")
+    col_nome = CABECALHOS_RESUMO.index("Documento")
+    linhas = [
+        numero_linha
+        for numero_linha, linha in enumerate(resumo, start=2)
+        if isinstance(linha[col_valor].valor, (int, float)) and not isinstance(linha[col_valor].valor, bool)
+    ]
+    if len(linhas) < MINIMO_DOCUMENTOS_NO_GRAFICO:
+        return False
+
+    aba = ws.title
+    serie = Series(
+        tx=SeriesLabel(strRef=StrRef(f=_referencia_de_linhas(aba, col_valor + 1, [1]))),
+        cat=AxDataSource(strRef=StrRef(f=_referencia_de_linhas(aba, col_nome + 1, linhas))),
+        val=NumDataSource(numRef=NumRef(f=_referencia_de_linhas(aba, col_valor + 1, linhas))),
+    )
+    serie.graphicalProperties = GraphicalProperties(solidFill=COR_CABECALHO_FUNDO)
+    serie.graphicalProperties.line = LineProperties(solidFill=COR_CABECALHO_FUNDO)
+    serie.dLbls = DataLabelList(
+        showVal=True, showSerName=False, showCatName=False, showLegendKey=False, showPercent=False, showBubbleSize=False,
+        numFmt=FORMATO_MOEDA,
+    )
+
+    grafico = BarChart()
+    grafico.type = "col"
+    grafico.title = TITULO_GRAFICO
+    grafico.title.overlay = False  # sem isso o titulo pode ser desenhado por cima da area do grafico
+    grafico.roundedCorners = False  # ausente, o Excel assume cantos arredondados
+    grafico.legend = None  # uma serie so: a legenda repetiria o titulo
+    grafico.gapWidth = 70
+    grafico.width, grafico.height = LARGURA_GRAFICO_CM, ALTURA_GRAFICO_CM
+    grafico.series.append(serie)
+    grafico.x_axis.delete = False
+    grafico.y_axis.delete = False
+    grafico.x_axis.axPos, grafico.y_axis.axPos = "b", "l"
+    grafico.y_axis.number_format = '"R$" #,##0'
+    grafico.y_axis.majorGridlines.spPr = GraphicalProperties(ln=LineProperties(solidFill=COR_BORDA))
+
+    linha_da_ancora = len(resumo) + 2 + LINHAS_ENTRE_TOTAL_E_GRAFICO + 1  # apos a linha de total
+    ws.add_chart(grafico, f"B{linha_da_ancora}")
+    return True
+
+
+# ---------- validacao de dados e formatacao condicional (etapa 10) ----------
+#
+# Listas suspensas so onde a coluna tem um conjunto FECHADO de valores, e a
+# lista e exatamente o dominio que o exportador escreve nela (senao o proprio
+# arquivo violaria a regra que carrega):
+# - Campos adicionais!Confianca: Alta/Media/Baixa/Corrigido e "—" (sem info).
+# - Documentos!Tipo: os valores INTERNOS (nota_fiscal...), nao os rotulos
+#   amigaveis -- e o que a coluna guarda (bom pra filtrar).
+# "Confianca geral" (Documentos) NAO entra: e uma proporcao em texto
+# ("6 de 7 alta"), nao um conjunto fechado.
+# Limites do Excel que, violados, o fazem pedir "reparar" (checados em
+# tests/ooxml.py): lista literal <= 255 caracteres, titulo do erro <= 32,
+# mensagem <= 255. `showDropDown=True` no openpyxl ESCONDE a seta (semantica
+# invertida do formato) -- por isso nunca e ligado.
+VALORES_CONFIANCA = [*ROTULOS_NIVEL.values(), SEM_CONFIANCA]
+VALORES_TIPO = list(ROTULOS_TIPO)
+TITULO_ERRO_LISTA = "Valor inválido"
+LIMITE_LISTA_LITERAL = 255
+
+
+def _lista_suspensa(ws, faixa: str, valores: list[str]) -> None:
+    if any("," in v for v in valores):
+        raise ValueError("valor com virgula nao cabe numa lista literal do Excel (a virgula separa itens)")
+    literal = ",".join(valores)
+    if len(literal) > LIMITE_LISTA_LITERAL:
+        raise ValueError(f"lista literal de {len(literal)} caracteres passa do limite do Excel ({LIMITE_LISTA_LITERAL})")
+    validacao = DataValidation(
+        type="list",
+        formula1=f'"{literal}"',
+        allow_blank=True,
+        showErrorMessage=True,
+        errorStyle="stop",
+        errorTitle=TITULO_ERRO_LISTA,
+        error="Escolha um valor da lista: " + ", ".join(valores),
+    )
+    validacao.add(faixa)
+    ws.add_data_validation(validacao)
+
+
+def _colorir_coluna_confianca(ws, faixa: str) -> None:
+    """Regras de formatacao condicional (nativas) sobre o TEXTO da coluna
+    Confianca de Campos adicionais: e a unica coluna em que o texto da celula
+    e o proprio valor, entao a cor pode acompanha-lo (editou "Baixa" pra
+    "Alta", a cor some). Nas demais celulas destacadas (Emissor, Valor total,
+    linhas de Itens...) a cor documenta a PROVENIENCIA da extracao -- o rastro
+    de "isto veio com confianca baixa" -- e NAO pode depender do valor atual
+    da celula (reescrever o campo apagaria o rastro); la continua o fundo
+    fixo + comentario. Mesmos tons de FUNDOS; "Corrigido" tambem em italico."""
+    for texto, estado in (("Média", "media"), ("Baixa", "baixa"), ("Corrigido", "corrigido")):
+        cor = FUNDOS[estado]
+        ws.conditional_formatting.add(
+            faixa,
+            CellIsRule(
+                operator="equal",
+                formula=[f'"{texto}"'],
+                fill=PatternFill(fill_type="solid", start_color=cor, end_color=cor),
+                font=Font(italic=True) if estado == "corrigido" else None,
+            ),
+        )
 
 
 # ---------- Relatorio (etapa 9): aba de LEITURA, nao de dado tabular ----------
@@ -1018,7 +1250,14 @@ def gerar_excel(documentos: list[DocumentoParaExportar], data_geracao: Optional[
     _escrever_aba(ws_resumo, CABECALHOS_RESUMO, resumo, NOMES_TABELA[NOME_ABA_DOCUMENTOS])
     _destacar_valor_total(ws_resumo, resumo)
     _nota_geracao(ws_resumo, len(CABECALHOS_RESUMO), data_geracao)
-    _configurar_impressao(ws_resumo, get_column_letter(len(CABECALHOS_RESUMO)), max(len(resumo) + 1, 1))
+    if resumo:
+        col_tipo = get_column_letter(CABECALHOS_RESUMO.index("Tipo") + 1)
+        _lista_suspensa(ws_resumo, f"{col_tipo}2:{col_tipo}{len(resumo) + 1}", VALORES_TIPO)
+    if len(resumo) > 1:
+        _escrever_linha_total_documentos(ws_resumo, len(resumo))
+        _grafico_valor_por_documento(ws_resumo, resumo)
+    # como nos Itens, a area de impressao inclui a linha de total
+    _configurar_impressao(ws_resumo, get_column_letter(len(CABECALHOS_RESUMO)), ws_resumo.max_row)
 
     ws_itens = wb.create_sheet("Itens")
     _escrever_aba(ws_itens, CABECALHOS_ITENS, itens, NOMES_TABELA["Itens"])
@@ -1030,6 +1269,11 @@ def gerar_excel(documentos: list[DocumentoParaExportar], data_geracao: Optional[
 
     ws_campos = wb.create_sheet("Campos adicionais")
     _escrever_aba(ws_campos, CABECALHOS_CAMPOS, campos, NOMES_TABELA["Campos adicionais"])
+    if campos:
+        col_conf = get_column_letter(CABECALHOS_CAMPOS.index("Confiança") + 1)
+        faixa_conf = f"{col_conf}2:{col_conf}{len(campos) + 1}"
+        _lista_suspensa(ws_campos, faixa_conf, VALORES_CONFIANCA)
+        _colorir_coluna_confianca(ws_campos, faixa_conf)
     _configurar_impressao(ws_campos, get_column_letter(len(CABECALHOS_CAMPOS)), max(len(campos) + 1, 1))
 
     ws_avisos = wb.create_sheet("Avisos")
@@ -1045,6 +1289,10 @@ def gerar_excel(documentos: list[DocumentoParaExportar], data_geracao: Optional[
     for aba, linhas in ((ws_itens, itens), (ws_campos, campos), (ws_avisos, avisos)):
         if not linhas:
             aba.sheet_state = "hidden"
+
+    # Relatorio (leitura, sem formula nem dado a editar) fica fora da protecao
+    for aba in (ws_resumo, ws_itens, ws_campos, ws_avisos):
+        _proteger_planilha(aba)
 
     buffer = BytesIO()
     wb.save(buffer)

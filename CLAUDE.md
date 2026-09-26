@@ -37,8 +37,10 @@ backend/app/
                           #   x0/x1/top/bottom (nao regex sobre texto corrido)
     generico.py           # GenericExtractor (fallback: pedido_compra, relatorio, desconhecido)
   llm_extractor.py     # extração via Claude (modo "ia", opcional)
-  excel_exporter.py    # lista de documentos -> .xlsx com 4 abas formatadas (openpyxl)
+  excel_exporter.py    # lista de documentos -> .xlsx: Relatorio + 4 abas de dados (Tabelas nomeadas),
+                        #   total/grafico de lote, listas suspensas, protecao (openpyxl) -- ver "Excel"
   confianca.py         # confianca geral ("X de Y alta"): a mesma regra da tela, em Python
+  logging_config.py    # log estruturado (logger "app") + request-id em contextvar -- ver "Robustez e observabilidade"
 backend/tests/
   fixtures/boleto_real_anonimizado.txt     # texto bruto de boleto real (dados trocados)
   fixtures/danfe_real_anonimizado.txt      # COMPOSTO de trechos reais (nao as 84 linhas) -- ver docstring do teste
@@ -53,7 +55,12 @@ backend/tests/
   test_pdf_extractor.py                 # orquestracao digital->OCR (mocks) + 1 teste OCR real (skip se indisponivel)
   test_avisos.py                        # avisos (lista) x aviso (string juntada)
   test_excel_exporter.py                # Excel multi-aba lido de volta com openpyxl (ver "Excel")
+  test_ooxml.py, ooxml.py, ooxml_sdk.ps1 # o .xlsx segue as regras do EXCEL (XML bruto) + SDK oficial da Microsoft (opt-in)
   test_confianca.py                     # regra da confianca geral em Python (a mesma da tela)
+  test_concorrencia.py                  # trabalho pesado nao bloqueia o /health (run_in_threadpool)
+  test_limites.py                       # tetos de tamanho/quantidade (upload, debug, /export-excel)
+  test_logging_config.py, test_observabilidade.py # log estruturado, request-id e X-Request-ID
+  test_erros_de_leitura.py              # PDF com senha e PDF sem paginas: mensagem propria, nao "corrompido"
   e2e/                                  # testes de interface no navegador (Playwright) -- opt-in, ver "Testes"
     helpers.py                          #   servidor uvicorn temporario + PDFs FICTICIOS gerados por PyMuPDF
     conftest.py, test_interface_confianca.py
@@ -599,7 +606,7 @@ meio de um handler pode deixar a tela "quase certa"; a validação captura
 `pageerror`.
 
 **Como é validado:** testes e2e versionados em `backend/tests/e2e/`
-(Playwright num Chromium real, 25 testes). PDFs **fictícios** gerados por
+(Playwright num Chromium real, 26 testes). PDFs **fictícios** gerados por
 PyMuPDF (`helpers.gerar_pdfs`) — nunca documento real. Cobrem: chips e contagem
 do resumo conferidos contra o JSON da resposta por uma conta independente em
 Python, banner com 2 avisos, campos abertos/fechados por estado, clique e teclado
@@ -617,12 +624,14 @@ trava de reentrância faz o teste correspondente falhar).
 partir dos mesmos PDFs sintéticos — nunca de um documento real (uma captura de
 tela com dado real já foi um vetor de vazamento neste projeto).
 
-## Excel (etapa 6)
+## Excel (etapas 6 a 10)
 
 `POST /export-excel` recebe uma **lista** de documentos (a tela envia 1; a
-estrutura já comporta lote) e devolve um `.xlsx` com **4 abas, sempre
-presentes** (estrutura estável pra Power Query/fórmulas; só cabeçalho quando
-não há dados):
+estrutura já comporta lote) e devolve um `.xlsx` com **5 abas**: o **Relatório**
+(1ª, a que abre; leitura) e 4 abas de dados. A estrutura é estável pra Power
+Query/fórmulas: as 4 de dados existem sempre, mas **ficam ocultas (não
+removidas) quando não têm nenhuma linha** (`sheet_state = "hidden"`, o nome da
+aba continua valendo):
 
 ```
 { "documentos": [ { "arquivo": "x.pdf", "resultado": <ExtractionResult>,
@@ -631,10 +640,14 @@ não há dados):
 
 | Aba | Colunas | Linhas |
 |---|---|---|
-| **Resumo** | ID, Arquivo, Documento, Tipo, Número, Data de emissão, Data de vencimento, Emissor, Emissor CNPJ/CPF, Destinatário, Destinatário CNPJ/CPF, Valor total, Confiança geral | 1 por documento |
+| **Relatório** | (não tabular) blocos por documento: emitente, destinatário, valores, itens, avisos; rodapé com a legenda só das cores que aparecem | — |
+| **Documentos** | ID, Arquivo, Documento, Tipo, Número, Data de emissão, Data de vencimento, Emissor, Emissor CNPJ/CPF, Destinatário, Destinatário CNPJ/CPF, Valor total, Confiança geral | 1 por documento |
 | **Itens** | ID, Documento, Descrição, Quantidade, Valor unitário, Valor total | todos os itens |
 | **Campos adicionais** | ID, Documento, Campo, Valor, Confiança | 1 por campo adicional |
 | **Avisos** | ID, Documento, Aviso | 1 por aviso |
+
+A aba "Documentos" se chamava "Resumo" até a etapa 9; identificadores internos
+(`CABECALHOS_RESUMO`, `_linha_resumo`...) mantêm o nome antigo de propósito.
 
 - **`ID`** (1, 2, 3… pela ordem do lote) está em todas as abas como **chave de
   ligação** — tipo + número pode colidir entre emissores diferentes.
@@ -653,9 +666,37 @@ não há dados):
   guarda `original` e `atual` por campo, então o custo é pequeno
   (`coletarCorrigidos` em `script.js`).
 
-**Formatação (todas as abas):** cabeçalho em negrito, congelado (`A2`), filtro
-automático cobrindo a tabela, largura ajustada ao conteúdo (mín. 8, teto 60,
-com quebra de linha nos textos).
+**Formatação (abas de dados; etapas 7 e 8):** cabeçalho escuro, zebra, bordas,
+alinhamento por tipo, cabeçalho **e coluna ID** congelados (`B2`), largura
+ajustada ao conteúdo (mín. 8, teto 60, com quebra de linha nos textos), cor da
+guia, área de impressão em paisagem. Cada aba com dados vira uma **Tabela
+nomeada** do Excel (`Documentos`, `Itens`, `CamposAdicionais`, `Avisos`) no
+lugar do auto_filter solto, com o estilo próprio da Tabela **desligado** (o
+listrado embutido brigaria com a zebra e os destaques). Metadados do arquivo:
+`creator` é o nome do aplicativo, nunca uma pessoa. **Não existe linha de
+título mesclada acima do cabeçalho** (cogitada e descartada: Power Query/pandas
+assumem "linha 1 = cabeçalho" e leriam o título como cabeçalho).
+
+**Bug real: o Excel pedia "reparar" o arquivo (etapa 8).** Passava em todos os
+testes com openpyxl/pandas (as duas bibliotecas são tolerantes; o Excel não).
+Duas causas: (1) **Tabela com `ref` só no cabeçalho** (aba sem dados); (2)
+**célula `t="inlineStr"` sem `<is>`** (string vazia tipada como texto). Hoje:
+só cria Tabela se há linhas (`if linhas:`) e célula vazia fica realmente vazia.
+Detectado por `tests/ooxml.py`, que lê o `.xlsx` como **XML bruto** (não pelo
+openpyxl) e checa regras que o Excel aplica além do schema. Três camadas de
+validação: (a) o verificador próprio, sempre; (b) o **Open XML SDK** da
+Microsoft (`--ooxml-sdk`, só Windows, opt-in; **não** pegou nenhum dos dois
+bugs acima, só um falso positivo documentado sobre a ordem dos filhos de
+`<font>`); (c) abrir no Excel de verdade (manual, feita pelo usuário a cada
+etapa).
+
+**Relatório (etapa 9):** aba de LEITURA, não tabular (retrato, sem Tabela, sem
+proteção): o mesmo dado em blocos por documento. Campo obrigatório vazio aparece
+como "não encontrado"; opcional vazio some. **Valor total** usa fonte grande em
+célula mesclada, e o Excel **não calcula a altura da linha** de célula mesclada
+com fonte grande (cortava o texto): a altura é explícita
+(`ALTURA_LINHA_VALOR_PRINCIPAL`). A chave de acesso aparece em blocos de 4 dígitos
+também em Campos adicionais (`_formatar_chave_acesso`).
 
 **Regras que evitam bugs reais de planilha** (docstring de `excel_exporter.py`):
 - **Formato monetário:** o código guardado no arquivo é `"R$" #,##0.00`
@@ -700,15 +741,111 @@ com 2 e 4 documentos). Falta a **interface** de lote (várias PDFs de uma vez,
 estado de edição por documento, fila/progresso, erro por arquivo); a extração
 continua por arquivo (o lote seriam N chamadas a `/extract-document`).
 
+**Recursos nativos do Excel (etapa 10)** — cada um com o motivo, pra não
+reabrir a discussão:
+- **Total do lote** (`_escrever_linha_total_documentos`): linha `=SUM` logo abaixo
+  da Tabela de Documentos (fora da `ref`), **só com 2+ documentos**. Rótulo "Total
+  do lote" na coluna antes do Valor total, **sem mesclar** (mesclar A:K
+  atravessaria a divisa do congelamento). Mesmo padrão da linha de total dos
+  Itens; quem lê a aba crua vê uma linha a mais com ID vazio (`_linhas_sem_total`
+  nos testes). Entra na área de impressão.
+- **Gráfico** (`_grafico_valor_por_documento`): barras verticais de Valor total por
+  Documento, abaixo do total (coluna **B**, não A: a A está congelada), **2+
+  documentos com valor numérico**. Lê direto das células (editar/filtrar a
+  planilha atualiza o gráfico). O Excel plota **texto como zero**, então o
+  documento com `valor_total` em texto fica de fora via união de intervalos
+  (`('Documentos'!$L$2,'Documentos'!$L$4:$L$5)`); no caso normal a referência é
+  um intervalo simples. Fora da área de impressão (uma quebra de página cortaria
+  o gráfico). **Pegadinhas do openpyxl 3.1** tratadas: não escreve
+  `<c:delete val="0"/>` nos eixos (o Excel 365 os **esconde**), categorias de
+  texto saem `numRef` (usa-se `strRef`), título sem `overlay` explícito, cantos
+  arredondados por padrão, flags de `dLbls` omitidas (o Excel pode ligá-las).
+- **Listas suspensas** (`_lista_suspensa`): só em **Documentos!Tipo** (valores
+  **internos**, `nota_fiscal`, porque é o que a coluna guarda) e **Campos
+  adicionais!Confiança** (Alta/Média/Baixa/Corrigido/"—": o domínio real da coluna;
+  senão o arquivo violaria a própria regra). **"Confiança geral" não** (é uma
+  proporção em texto, "6 de 7 alta"). Limites que fazem o Excel pedir reparo: lista
+  literal ≤ 255 caracteres, título do erro ≤ 32, mensagem ≤ 255; `showDropDown=True`
+  do openpyxl **esconde** a seta (semântica invertida). A validação só barra
+  entrada NOVA: um tipo inventado pelo modo IA que já esteja na célula continua lá.
+- **Formatação condicional nativa só na coluna Confiança de Campos adicionais**
+  (`_colorir_coluna_confianca`), onde o texto da célula É o valor (a cor acompanha
+  uma edição). **Trocar todos os destaques por regras foi descartado:** nas demais
+  células (Emissor, Valor total, Itens) a cor documenta a **proveniência** da
+  extração ("veio com confiança baixa") e não pode depender do valor atual;
+  reescrever o campo apagaria o rastro que o comentário da célula preserva, e a
+  linha nem carrega o dado de confiança que uma regra poderia ler. Nessa coluna
+  não há fundo fixo (senão editar "Baixa" → "Alta" deixaria a célula vermelha).
+- **Proteção de planilha sem senha** (`_proteger_planilha`) nas 4 abas de dados
+  (Relatório fica de fora): cabeçalho, linhas de total e tudo fora da tabela
+  **bloqueados**; células de dado **desbloqueadas** (`Protection(locked=False)`
+  em `_escrever_aba`). Semântica **invertida** no formato: `autoFilter="0"` e
+  `sort="0"` significam **liberado**. **Prioridade do usuário: filtro e
+  ordenação da Tabela valem mais que a trava** (se a proteção os atrapalhasse,
+  sai a proteção). Testado no Excel real: funcionam com a aba protegida. Gráfico
+  fica editável (`objects` desligado). Consequência: a Tabela não cresce com a aba
+  protegida (Revisão > Desproteger planilha).
+
 **Como é validado:** `tests/test_excel_exporter.py` (lê o `.xlsx` de volta com
-`openpyxl`: abas, negrito/congelado/filtro, formatos, datas, texto vs número,
-fórmula, fundos e comentários, lote, endpoint), `tests/test_confianca.py` e os
-`test_excel_*` do e2e (Excel comparado com a tela). Conferido por mutação
-(deixar o `openpyxl` inferir fórmula, formato monetário "brasileiro" literal,
-chave de acesso como número, a tela não enviar `corrigidos`, Python contando
-corrigido como "alta"). **Não foi renderizado no Excel/LibreOffice** (não
-disponível no ambiente de desenvolvimento): a conferência visual é manual.
-`pandas` deixou de ser dependência (só o exportador o usava).
+`openpyxl`: abas, formatos, datas, texto vs número, fórmula, fundos e
+comentários, lote, endpoint, e os recursos da etapa 10, com invariantes tipo
+"nenhuma fórmula fica desbloqueada" e "todo valor escrito nas colunas validadas
+pertence à própria lista"), `tests/test_ooxml.py` (o verificador `ooxml.py` sobre
+9 cenários, mais testes de que ele **acusa** arquivo quebrado: sem isso seria
+decorativo; regras cobrem Tabelas, listas, regras condicionais, gráfico e
+proteção; o SDK da Microsoft roda nos mesmos 9 cenários com `--ooxml-sdk`),
+`tests/test_confianca.py` e os `test_excel_*` do e2e (Excel comparado com a
+tela). **Conferido por mutação** a cada etapa (ex.: deixar o `openpyxl` inferir
+fórmula, chave de acesso como número, gráfico sem `delete=False`, categorias como
+`numRef`, filtro bloqueado pela proteção, fundo fixo de volta na Confiança): 33 de
+34 mutantes da etapa 10 pegos; o que sobrou é equivalente (a função do gráfico já
+exige 2+ documentos). Testes que adulteram o XML conferem que a adulteração
+achou o trecho (`assert adulterado != conteudo`), senão o teste vira decorativo
+quando o formato muda. **Renderização:** LibreOffice não está disponível no
+ambiente; a conferência visual no Excel é manual e é feita pelo usuário com
+arquivos de amostra (`Documents\extrator-docs-capturas\etapaN\`) **antes** de
+qualquer commit de mudança no Excel. `pandas` deixou de ser dependência (só o
+exportador o usava).
+
+## Robustez e observabilidade (diagnóstico de maturidade, itens 1 a 5)
+
+Medido antes de corrigir, cada item com teste que reproduz o problema:
+
+- **Event loop não pode bloquear** (`tests/test_concorrencia.py`): ler o PDF,
+  extrair campos e montar o Excel são síncronos e levam segundos; chamados direto
+  numa rota `async def` travavam o servidor inteiro (até o `/health`). Tudo passa
+  por `fastapi.concurrency.run_in_threadpool` (`main._ler_pdf`, extração básica e
+  IA, `/export-excel`, `/debug/*`).
+- **Tetos de tamanho** (`tests/test_limites.py`): upload sempre limitado a
+  `TAMANHO_MAXIMO_BYTES` (20 MB), inclusive nos endpoints de debug;
+  `/export-excel` limita `documentos` (100), `itens` por documento
+  (`TETO_ITENS` = 1000), `campos_adicionais` (`TETO_CAMPOS_ADICIONAIS` = 100),
+  `avisos` (50) e o total de itens do lote (`TETO_ITENS_TOTAL_DO_LOTE` = 5000), via
+  Pydantic. Os testes conferem os valores absolutos (comparar `TETO + 1` com o
+  próprio `TETO` é tautologia: uma mutação que sobe o teto passaria).
+- **CI** (`.github/workflows/tests.yml`): `pytest tests` a cada push na `main` e em
+  todo PR, Python 3.12, com badge no README. **Não** instala Playwright nem roda
+  `--e2e`/`--ooxml-sdk` (esses se pulam sozinhos). Cuidado com o YAML 1.1: `on:`
+  sem aspas vira booleano; está `"on":`.
+- **Log estruturado** (`app/logging_config.py`, `main._logar_extracao`): só
+  `logging`, sem Sentry. Configura só o logger `"app"` (`propagate = False`,
+  `LOG_LEVEL` do ambiente), com `request_id` num `contextvars.ContextVar` que
+  qualquer logger do projeto enxerga; o mesmo id volta no cabeçalho
+  **`X-Request-ID`** (`RequestIdMiddleware`). Uma linha JSON por extração:
+  arquivo, duração, páginas, origem do texto, modo, extrator escolhido, campos de
+  confiança média/baixa e obrigatórios vazios. `caplog.at_level(logger=X)` dos
+  testes continua funcionando (anexa direto ao logger nomeado).
+- **Mensagens de erro por causa** (`tests/test_erros_de_leitura.py`): PDF com
+  senha levanta `pdf_extractor.PDFProtegidoPorSenha` (o pdfplumber embrulha
+  `PDFPasswordIncorrect` em `PdfminerException.args[0]`, não em `__cause__`) e
+  vira 400 "protegido por senha"; PDF **sem nenhuma página** (`numero_paginas ==
+  0`) ganha aviso próprio em vez de "parece ser uma imagem escaneada"; arquivo
+  realmente corrompido continua "corrompido", e PDF escaneado de verdade continua
+  com o aviso de imagem (testes de falso positivo).
+
+Itens do diagnóstico **ainda não feitos** (adiados de propósito): números de
+tempo de extração publicados, rate limit por IP nos uploads e o parágrafo de
+"decisões descartadas" no README.
 
 ## Convenções
 
@@ -786,7 +923,7 @@ direto com um `UploadFile` montado na mão, porque `httpx` (TestClient) não
 está nas dependências.
 
 **Testes e2e (interface, opt-in).** `tests/e2e/` roda a interface num Chromium
-real e **não** entra no `pytest tests` normal (que pula os 25 e2e sem subir
+real e **não** entra no `pytest tests` normal (que pula os 26 e2e sem subir
 servidor nem navegador, e não exige Playwright). Dependências separadas:
 
 ```bash
@@ -882,7 +1019,7 @@ Não implementado ainda / possíveis próximos passos:
   "Interface: confiança e edição"; falta só a validação manual do usuário no
   navegador. A anotação de que `itens` da DANFE deve ser `"alta"` quando a
   soma fecha também já está implementada, ver "Tabela de itens".)
-- Excel (etapa 6) **implementado** — ver "Excel".
+- Excel (etapas 6 a 10) **implementado** — ver "Excel".
 - Interface de **lote** (várias PDFs de uma vez): o backend/Excel já comporta;
   falta a tela (estado por documento, fila/progresso, erro por arquivo).
 - Correção de confusão de OCR cobre só CNPJ/CPF/valores — não

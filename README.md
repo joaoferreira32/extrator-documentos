@@ -26,13 +26,14 @@ indicador de confiança em cada campo extraído para o usuário saber o que revi
 - **Excel com aba de leitura e abas de dados:** um Relatório em blocos (por documento,
   com hierarquia visual) ao lado de Documentos/Itens/Campos adicionais/Avisos (Tabelas
   nomeadas, prontas pra Tabela Dinâmica/Power Query), valores em R$, datas reais e chave
-  de 44 dígitos preservada.
+  de 44 dígitos preservada. Num lote, ganha total e gráfico de valor por documento; as
+  abas de dados têm listas suspensas e proteção sem senha (filtro continua funcionando).
 - **Segurança e privacidade:** proteção contra injeção de fórmula no Excel;
   nenhum dado pessoal real no repositório nem no histórico do Git.
-- **232 testes:** 199 rodam por padrão (unitários, regressão sobre um boleto e uma DANFE
+- **297 testes:** 262 rodam por padrão (unitários, regressão sobre um boleto e uma DANFE
   reais anonimizados, e um verificador que lê o `.xlsx` gerado como XML bruto pra pegar
   erro que o Excel rejeitaria mas o openpyxl não veria); mais 26 de interface num
-  navegador real (Playwright) e 7 que validam o Excel contra o SDK oficial da Microsoft.
+  navegador real (Playwright) e 9 que validam o Excel contra o SDK oficial da Microsoft.
 - **CI no GitHub Actions** a cada push, e log estruturado por extração (tempo, extrator
   escolhido, campos vazios/de baixa confiança) com id de correlação por requisição.
 - **OCR opcional** (Tesseract) para PDFs escaneados.
@@ -82,18 +83,32 @@ há indicador de confiança por campo, mas a edição funciona igual.
 
 ### Excel
 
-O botão **Baixar Excel** gera um `.xlsx` com 4 abas, sempre presentes:
+O botão **Baixar Excel** gera um `.xlsx` com 5 abas:
 
 | Aba | Conteúdo |
 |---|---|
-| **Resumo** | uma linha por documento (tipo, número, datas, emissor e destinatário com CNPJ/CPF em colunas próprias, valor total, confiança geral) |
-| **Itens** | descrição, quantidade, valor unitário e total |
+| **Relatório** | a mesma informação em blocos, por documento (emitente, destinatário, valores, itens…), pra quem só quer *ler*; é a aba que abre, com a legenda das cores que aparecem de fato |
+| **Documentos** | uma linha por documento (tipo, número, datas, emissor e destinatário com CNPJ/CPF em colunas próprias, valor total, confiança geral) |
+| **Itens** | descrição, quantidade, valor unitário e total, com linha de total |
 | **Campos adicionais** | chave de acesso, CFOP, nosso número, linha digitável… com a confiança de cada um |
 | **Avisos** | o que a extração pediu para conferir |
 
-Todas têm cabeçalho congelado, filtro, largura ajustada e uma coluna `ID` que liga as
-abas. Confiança média/baixa e campos corrigidos ficam destacados, com comentário.
-A estrutura (lista de documentos, `ID`) já comporta vários documentos no mesmo arquivo.
+As quatro últimas são Tabelas nomeadas do Excel, com cabeçalho e coluna `ID` congelados, e
+o `ID` liga as abas. Confiança média/baixa e campos corrigidos ficam destacados, com
+comentário. Aba de dados sem nenhuma linha fica oculta (não removida: quem usa Power Query
+pelo nome da aba não quebra). A estrutura (lista de documentos, `ID`) comporta vários
+documentos no mesmo arquivo.
+
+Num lote (2 ou mais documentos), a aba Documentos ganha uma linha de **total do lote** e um
+**gráfico de barras** do valor total por documento, abaixo da tabela. O gráfico só aparece
+com 2 ou mais valores numéricos; um documento cujo valor virou texto fica de fora, em vez
+de aparecer como uma barra zero.
+
+Nas abas de dados também há **listas suspensas** (Tipo, e a Confiança dos campos
+adicionais, as únicas colunas com um conjunto fechado de valores), **cor condicional
+nativa** na coluna Confiança (acompanha o texto) e **proteção sem senha**: cabeçalho e
+totais travados, dados livres, filtro e ordenação funcionando. Com a aba protegida a Tabela
+não cresce; para acrescentar linhas, Revisão > Desproteger planilha.
 
 ## Como rodar (Windows / PowerShell)
 
@@ -123,7 +138,7 @@ cd backend
 .venv\Scripts\python.exe -m pytest tests -v
 ```
 
-São 199 testes rodando por padrão, entre unitários e de regressão. Os de regressão usam
+São 262 testes rodando por padrão, entre unitários e de regressão. Os de regressão usam
 o texto bruto de um boleto e de trechos de uma DANFE reais, com os dados pessoais
 trocados por fictícios. Eles existem porque os cenários que escrevi à mão não
 reproduziam os bugs que apareciam no documento de verdade.
@@ -132,7 +147,7 @@ O teste de OCR real só roda se o Tesseract e o idioma português estiverem inst
 Sem eles, ele é pulado em vez de falhar. Os outros testes de OCR usam mocks.
 
 Toda vez que dou push (ou abro um PR), o [GitHub Actions](.github/workflows/tests.yml)
-roda esses 199 testes sozinho — é o badge que aparece no topo deste README.
+roda esses 262 testes sozinho — é o badge que aparece no topo deste README.
 
 Há mais 26 testes de interface, que rodam num Chromium de verdade via Playwright com
 PDFs fictícios gerados na hora. Eles são opcionais e têm dependências à parte:
@@ -143,8 +158,8 @@ PDFs fictícios gerados na hora. Eles são opcionais e têm dependências à par
 .venv\Scripts\python.exe -m pytest tests\e2e --e2e -v
 ```
 
-Tem também 7 testes que validam o `.xlsx` exportado contra o SDK oficial da Microsoft
-(Open XML), além do verificador próprio (que já roda nos 199 de sempre). São Windows-only
+Tem também 9 testes que validam o `.xlsx` exportado contra o SDK oficial da Microsoft
+(Open XML), além do verificador próprio (que já roda nos 262 de sempre). São Windows-only
 e opcionais, porque baixam esse SDK na primeira vez:
 
 ```powershell
@@ -227,6 +242,17 @@ confiável e caem para texto quando não é, em vez de quebrar a extração inte
 guarda apenas 15 de precisão, o que a destruiria. CFOP e número do documento têm zeros à
 esquerda. Os três ficam como texto. Todo texto vindo do PDF é gravado como texto, nunca
 como fórmula.
+
+**Recursos nativos do Excel, com um descarte.** Total do lote, gráfico, listas suspensas e
+proteção entraram; trocar todos os destaques de confiança por formatação condicional não.
+A cor de um campo (Emissor, Valor total…) documenta *como* ele foi extraído ("veio com
+confiança baixa"), não o valor que está na célula agora: se a cor seguisse o valor,
+corrigir o campo apagaria o rastro que o comentário da célula preserva. Só a coluna
+Confiança dos campos adicionais usa regra condicional, porque ali o texto da célula é o
+próprio valor. Um detalhe que o schema não pega: o openpyxl 3.1 não escreve o elemento que
+mantém os eixos do gráfico visíveis, e o Excel 365 os esconde; o verificador do `.xlsx`
+acusa. E a proteção só entrou depois de testar no Excel de verdade que filtro e ordenação
+da Tabela continuam funcionando com a aba protegida.
 
 **Frontend servido pelo próprio FastAPI**, em HTML, CSS e JavaScript puros. Um processo
 só em `localhost:8000`, sem CORS e sem CDN externo.
