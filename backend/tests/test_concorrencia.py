@@ -26,7 +26,14 @@ import helpers  # noqa: E402
 import pymupdf  # noqa: E402
 
 TIMEOUT_HEALTH = 2.0
-LIMITE_ACEITAVEL = 0.5  # bem acima do normal (poucos ms), bem abaixo do que o bug antigo dava
+# Medido (8 rodadas, com a correcao): o MAXIMO do /health durante a extracao
+# fica em 343-466 ms. Nao e "poucos ms": pdfplumber e Python puro, a thread da
+# extracao disputa o GIL com o event loop, e o run_in_threadpool tira o
+# bloqueio TOTAL, nao essa disputa. Um limite de 0,5 s (o valor antigo) ficava
+# a 34 ms do pior caso medido e falhou sozinho numa rodada da suite completa.
+# O bug de verdade bloqueava por segundos (uma chamada deu >5 s), entao 1,5 s
+# separa os dois com folga dos dois lados (verificado por mutacao).
+LIMITE_ACEITAVEL = 1.5
 
 
 def _pdf_pesado(n_paginas: int) -> bytes:
