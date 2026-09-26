@@ -187,7 +187,7 @@ def test_valor_total_em_formato_br_vira_numero_no_json_e_no_excel(tela):
     valor = tela.json_bruto()["documento"]["valor_total"]
     assert valor == 1500.5 and isinstance(valor, float)
     assert tela.baixar_excel().resumo["Valor total"] == 1500.5  # numero de verdade no Excel
-    assert tela.campo("valor_total").locator(".valor-texto").inner_text() == "1.500,50"
+    assert tela.campo("valor_total").locator(".valor-texto").inner_text() == "R$ 1.500,50"  # como no Excel
 
     tela.page.click('[data-campo="valor_total"] .valor-btn')  # nao parseavel: fica texto
     tela.campo("valor_total").locator("textarea").fill("a combinar")
@@ -216,7 +216,7 @@ def test_mudar_o_tipo_muda_os_campos_obrigatorios(tela):
 def test_itens_em_pt_br_e_valores_numericos_intactos_no_json_e_no_excel(tela):
     tela.extrair("danfe_ok")
     celulas = tela.page.locator("#tabela-itens tbody tr:first-child td").all_inner_texts()
-    assert celulas == ["Mochila", "1", "215,03", "215,03"]  # nunca "215.03"
+    assert celulas == ["Mochila", "1", "R$ 215,03", "R$ 215,03"]  # nunca "215.03"; "R$" como no Excel
 
     item = tela.json_bruto()["documento"]["itens"][0]
     assert item["valor_total"] == 215.03 and item["valor_unitario"] == 215.03  # numeros no JSON

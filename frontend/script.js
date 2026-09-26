@@ -74,6 +74,18 @@ const CAMPOS_OBRIGATORIOS = {
 
 const CAMPOS_NUMERICOS = new Set(["valor_total"]);
 
+// Exibição igual à do Excel (backend/app/excel_exporter.py), campo a campo:
+// dinheiro com "R$" e em pt-BR, data em dd/mm/aaaa. Só EXIBIÇÃO: o editor e o
+// valor guardado/exportado continuam como vieram.
+// Espelho de CAMPOS_MONETARIOS do exportador (um teste compara as duas listas).
+const CAMPOS_ADICIONAIS_MONETARIOS = new Set([
+  "Valor do Documento",
+  "Desconto",
+  "Valor a Pagar",
+  "Valor Total dos Produtos",
+]);
+const CAMPOS_DATA = new Set(["data_emissao", "data_vencimento"]);
+
 // ---------- Ícones (SVG estático; forma diferente por estado, nunca só cor) ----------
 
 const ICONES = {
@@ -442,6 +454,29 @@ function formatarNumero(n, minimo = 2, maximo = 2) {
   return n.toLocaleString("pt-BR", { minimumFractionDigits: minimo, maximumFractionDigits: maximo });
 }
 
+function formatarMoeda(n, minimo = 2, maximo = 2) {
+  return `R$ ${formatarNumero(n, minimo, maximo)}`;
+}
+
+// "15/4/2026", "15-04-2026" ou "2026-04-15" (o modo IA pode devolver ISO) ->
+// "15/04/2026". Dia inexistente ou texto livre fica como veio -- as mesmas
+// regras de _para_data no exportador do Excel.
+function formatarData(texto) {
+  const t = String(texto).trim();
+  let dia, mes, ano;
+  let m = t.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/);
+  if (m) {
+    [dia, mes, ano] = [Number(m[1]), Number(m[2]), Number(m[3])];
+  } else if ((m = t.match(/^(\d{4})-(\d{2})-(\d{2})$/))) {
+    [ano, mes, dia] = [Number(m[1]), Number(m[2]), Number(m[3])];
+  } else {
+    return texto;
+  }
+  const d = new Date(Date.UTC(ano, mes - 1, dia));
+  if (d.getUTCFullYear() !== ano || d.getUTCMonth() !== mes - 1 || d.getUTCDate() !== dia) return texto;
+  return `${String(dia).padStart(2, "0")}/${String(mes).padStart(2, "0")}/${ano}`;
+}
+
 // "35260472..." -> "3526 0472 ..." (blocos de 4). Só agrupa se for só dígitos.
 function formatarChave(texto) {
   return /^\d+$/.test(texto) ? texto.replace(/(\d{4})(?=\d)/g, "$1 ") : texto;
@@ -457,11 +492,22 @@ function textoDoValor(campo) {
   return String(campo.atual);
 }
 
-// Texto exibido quando o campo está fechado: igual ao do editor, exceto o
-// tipo do documento, que mostra o rótulo amigável.
+// Texto exibido quando o campo está fechado: o do editor, mais a formatação
+// que o Excel também aplica (tipo amigável, "R$", data dd/mm/aaaa).
 function textoExibido(campo) {
-  if (campo.id === "tipo_documento" && !estaVazio(campo.atual)) {
+  if (estaVazio(campo.atual)) return textoDoValor(campo);
+  if (campo.id === "tipo_documento") {
     return ROTULOS_TIPO[campo.atual] ?? String(campo.atual);
+  }
+  if (campo.editor === "numero" && typeof campo.atual === "number") {
+    return formatarMoeda(campo.atual);
+  }
+  if (campo.origem === "extra" && CAMPOS_ADICIONAIS_MONETARIOS.has(campo.rotulo)) {
+    const n = parseNumeroBR(campo.atual);
+    if (n !== null) return formatarMoeda(n);
+  }
+  if (campo.origem === "doc" && CAMPOS_DATA.has(campo.chave)) {
+    return formatarData(campo.atual);
   }
   return textoDoValor(campo);
 }
@@ -781,9 +827,10 @@ function atualizarResumo() {
 
 // ---------- Itens ----------
 
-// Número -> pt-BR (215.03 -> "215,03"); texto (valor que não virou número) fica como veio.
-function formatarCelulaNumerica(valor, minimo, maximo) {
-  if (typeof valor === "number") return formatarNumero(valor, minimo, maximo);
+// Número -> pt-BR (215.03 -> "215,03"; dinheiro com "R$", como no Excel);
+// texto (valor que não virou número) fica como veio.
+function formatarCelulaNumerica(valor, minimo, maximo, moeda = false) {
+  if (typeof valor === "number") return moeda ? formatarMoeda(valor, minimo, maximo) : formatarNumero(valor, minimo, maximo);
   return valor;
 }
 
@@ -819,8 +866,8 @@ function preencherTabelaItens(itens) {
     const celulas = [
       item.descricao,
       formatarCelulaNumerica(item.quantidade, 0, 4),
-      formatarCelulaNumerica(item.valor_unitario, 2, 4), // preço unitário pode ter 4 casas
-      formatarCelulaNumerica(item.valor_total, 2, 2),
+      formatarCelulaNumerica(item.valor_unitario, 2, 4, true), // preço unitário pode ter 4 casas
+      formatarCelulaNumerica(item.valor_total, 2, 2, true),
     ];
     for (const texto of celulas) {
       const td = document.createElement("td");

@@ -83,13 +83,17 @@ async def _ler_pdf(file: UploadFile) -> pdf_extractor.TextoExtraido:
     PDF de 55 MB era processado normalmente neles mesmo depois do limite
     ja existir em /extract-document. Bug real, medido."""
     if file.content_type != "application/pdf":
-        raise HTTPException(status_code=400, detail="Envie um arquivo PDF.")
+        raise HTTPException(status_code=400, detail="Este arquivo não é um PDF. Escolha um arquivo .pdf.")
 
     conteudo = await file.read()
     if not conteudo:
-        raise HTTPException(status_code=400, detail="Arquivo vazio.")
+        raise HTTPException(status_code=400, detail="O arquivo está vazio.")
     if len(conteudo) > TAMANHO_MAXIMO_BYTES:
-        raise HTTPException(status_code=400, detail="Arquivo maior que 20 MB.")
+        tamanho_mb = f"{len(conteudo) / (1024 * 1024):.1f}".replace(".", ",")
+        raise HTTPException(
+            status_code=400,
+            detail=f"O arquivo tem {tamanho_mb} MB, e o limite é {TAMANHO_MAXIMO_BYTES // (1024 * 1024)} MB. Envie um PDF menor.",
+        )
 
     try:
         # run_in_threadpool: extrair_texto e sincrono e pode demorar segundos
@@ -103,12 +107,12 @@ async def _ler_pdf(file: UploadFile) -> pdf_extractor.TextoExtraido:
         # enganosa, o arquivo esta perfeito, so precisa da senha.
         raise HTTPException(
             status_code=400,
-            detail="Este PDF esta protegido por senha. Remova a senha e envie novamente.",
+            detail="Este PDF está protegido por senha. Remova a senha e envie de novo.",
         )
     except Exception:
         raise HTTPException(
             status_code=400,
-            detail="Nao foi possivel ler este arquivo como PDF. Ele pode estar corrompido.",
+            detail="Não foi possível ler este arquivo como PDF. Ele pode estar corrompido.",
         )
 
 
@@ -161,7 +165,7 @@ async def extract_document(file: UploadFile):
         # `parece_escaneado` abaixo (texto vazio e vazio, mesma condicao) e
         # dizia "parece ser uma imagem escaneada" -- diagnostico errado,
         # nao ha imagem nenhuma, nao ha pagina nenhuma pra ter.
-        aviso = "Este PDF nao tem nenhuma pagina."
+        aviso = "Este PDF não tem nenhuma página."
         resultado = ExtractionResult(
             modo_extracao="basico",
             origem_texto=resultado_texto.origem,
@@ -176,14 +180,16 @@ async def extract_document(file: UploadFile):
     if resultado_texto.parece_escaneado:
         if resultado_texto.ocr_disponivel:
             aviso = (
-                "Este PDF parece ser uma imagem escaneada e o OCR nao "
-                "conseguiu extrair texto legivel dele."
+                "Este PDF parece ser uma imagem escaneada, e a leitura de imagem (OCR) "
+                "não conseguiu extrair texto legível dele."
             )
         else:
+            # Quem ve isto na demo publica nao tem como instalar nada: a mensagem
+            # diz o que fazer com o documento. A instalacao do Tesseract esta no README.
             aviso = (
-                "Este PDF parece ser uma imagem escaneada. OCR nao esta "
-                "disponivel neste momento (Tesseract nao encontrado no "
-                "sistema) -- veja o README para instalar."
+                "Este PDF parece ser uma imagem escaneada, e a leitura de imagem (OCR) "
+                "não está disponível neste servidor. Envie um PDF com texto digital "
+                "(gerado pelo sistema emissor, não escaneado)."
             )
         resultado = ExtractionResult(
             modo_extracao="basico",
@@ -218,8 +224,8 @@ async def extract_document(file: UploadFile):
                 resultado_texto,
                 resultado_extracao,
                 aviso_extra=(
-                    f"Extracao por IA indisponivel no momento "
-                    f"({type(exc).__name__}), usando modo basico."
+                    f"A extração por IA não está disponível agora "
+                    f"({type(exc).__name__}); o documento foi lido no modo básico."
                 ),
             )
             nome_extrator = await run_in_threadpool(
@@ -277,8 +283,8 @@ async def debug_extract_words(file: UploadFile):
         raise HTTPException(
             status_code=400,
             detail=(
-                "Este PDF nao tem posicao de palavra disponivel (provavelmente "
-                "e uma imagem escaneada, sem camada de texto digital)."
+                "Este PDF não tem posição de palavra disponível (provavelmente "
+                "é uma imagem escaneada, sem camada de texto digital)."
             ),
         )
 

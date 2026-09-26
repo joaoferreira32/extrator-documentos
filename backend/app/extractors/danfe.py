@@ -382,8 +382,8 @@ class DanfeExtractor(ExtratorDocumento):
             resultado.confiancas["Chave de Acesso"] = confianca_chave
             if confianca_chave == "baixa":
                 resultado.avisos.append(
-                    "A chave de acesso encontrada tem 44 digitos mas o digito "
-                    "verificador nao confere -- confira manualmente."
+                    "A chave de acesso encontrada tem 44 dígitos, mas o dígito "
+                    "verificador não confere — confira a chave manualmente."
                 )
         # So uma chave com DV valido serve de evidencia pra conferir os
         # outros campos (uma chave com DV errado pode ser OCR ruim).
@@ -435,7 +435,7 @@ class DanfeExtractor(ExtratorDocumento):
                     confianca = "baixa"
                     resultado.avisos.append(
                         "O CNPJ do emitente lido no documento difere do CNPJ embutido na "
-                        "chave de acesso -- confira o emissor manualmente."
+                        "chave de acesso — confira o emissor manualmente."
                     )
             resultado.confiancas["emissor"] = confianca
         elif gerado_pelo_generico and not _TITULO_CAIXA_VIZINHA_RE.search(gerado_pelo_generico):
@@ -479,8 +479,8 @@ class DanfeExtractor(ExtratorDocumento):
             if totais_fecham(totais) is False:
                 resultado.confiancas["valor_total"] = "media"
                 resultado.avisos.append(
-                    "Os valores da grade de totais nao fecham (produtos - desconto + ICMS ST + "
-                    "frete + seguro + outras despesas + IPI difere do total da nota) -- "
+                    "Os valores da grade de totais não fecham (produtos − desconto + ICMS ST + "
+                    "frete + seguro + outras despesas + IPI difere do total da nota) — "
                     "confira o valor total manualmente."
                 )
             else:
@@ -508,8 +508,8 @@ class DanfeExtractor(ExtratorDocumento):
         else:
             resultado.confiancas["numero_documento"] = "baixa"
             resultado.avisos.append(
-                "O numero da nota lido no documento difere do numero embutido na "
-                "chave de acesso -- confira manualmente."
+                "O número da nota lido no documento difere do número embutido na "
+                "chave de acesso — confira manualmente."
             )
 
     def _extrair_tabela_itens(
@@ -554,9 +554,9 @@ class DanfeExtractor(ExtratorDocumento):
 
         if abs(valor_total_produtos - tabela.soma_valor_total) > _TOLERANCIA_SOMA:
             resultado.avisos.append(
-                f"A soma dos itens (R$ {tabela.soma_valor_total:.2f}) nao bate com "
-                f"o Valor Total dos Produtos informado (R$ {valor_total_produtos:.2f}) "
-                "-- confira a tabela manualmente."
+                f"A soma dos itens (R$ {comum.formatar_valor_br(tabela.soma_valor_total)}) não bate com "
+                f"o Valor Total dos Produtos informado (R$ {comum.formatar_valor_br(valor_total_produtos)}) "
+                "— confira a tabela manualmente."
             )
         elif all(isinstance(item.valor_total, float) for item in tabela.itens):
             # Todos os itens com total numerico E a soma bate: sem essa

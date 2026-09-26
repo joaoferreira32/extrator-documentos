@@ -355,7 +355,7 @@ def _linha_resumo(id_doc: int, doc: DocumentoParaExportar, rotulo: str) -> list[
     comentario_avisos = None
     if avisos_doc:
         plural = "s" if len(avisos_doc) > 1 else ""
-        comentario_avisos = f"Este documento tem {len(avisos_doc)} aviso{plural} -- ver a aba Avisos."
+        comentario_avisos = f"Este documento tem {len(avisos_doc)} aviso{plural} — veja a aba Avisos."
 
     return [
         Celula(id_doc, "0"),

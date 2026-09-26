@@ -150,7 +150,7 @@ def test_numero_documento_que_contradiz_a_chave_vira_baixa_com_aviso():
     texto = FIXTURE_TEXTO.read_text(encoding="utf-8") + "Nº999999999\n"
     resultado = _resultado_com_linhas(texto)
     assert resultado.confiancas["numero_documento"] == "baixa"
-    assert any("numero da nota" in aviso for aviso in resultado.avisos)
+    assert any("número da nota" in aviso for aviso in resultado.avisos)
 
 
 def test_emissor_com_cnpj_diferente_da_chave_vira_baixa_com_aviso():
@@ -243,7 +243,9 @@ def test_soma_divergente_gera_aviso():
         texto=texto, linhas=texto.splitlines(), paginas_palavras=_carregar_paginas_palavras()
     )
     resultado = DanfeExtractor().extrair(contexto)
-    assert any("nao bate" in aviso for aviso in resultado.avisos)
+    (aviso,) = [a for a in resultado.avisos if "não bate" in a]
+    # valores em pt-BR, igual a tela e ao Excel (antes saia "R$ 215.03")
+    assert "(R$ 215,03)" in aviso and "(R$ 999,99)" in aviso
     # o campo continua exposto mesmo quando diverge -- o valor "errado" (do
     # jeito que veio no documento) e o que interessa mostrar, nao um valor
     # corrigido por nos
@@ -412,7 +414,7 @@ def test_valor_total_segue_a_posicao_e_nao_o_numero_mais_proximo():
     assert resultado.documento.valor_total == 300.0
     # A formula nao fecha (215,03 + 13,97 != 300,00): confianca cai e avisa.
     assert resultado.confiancas["valor_total"] == "media"
-    assert any("nao fecham" in aviso for aviso in resultado.avisos)
+    assert any("não fecham" in aviso for aviso in resultado.avisos)
 
 
 def test_grade_com_quantidade_de_valores_diferente_nao_chuta():
@@ -551,7 +553,7 @@ def test_confianca_dos_itens_e_alta_so_quando_a_soma_fecha():
     )
     resultado = DanfeExtractor().extrair(contexto_div)
     assert resultado.confiancas["itens"] == "media"
-    assert any("nao bate" in aviso for aviso in resultado.avisos)
+    assert any("não bate" in aviso for aviso in resultado.avisos)
 
 
 def test_confianca_dos_itens_fica_media_sem_valor_total_dos_produtos_pra_conferir():
