@@ -130,10 +130,14 @@ def ip_do_cliente(scope: dict, confiar_x_forwarded_for: bool) -> str:
     ignorado -- quem fala direto com o servidor nao consegue forjar outro IP.
     Com ele (ligado no Render, onde toda requisicao chega por um proxy): o
     PRIMEIRO IP de X-Forwarded-For, que e o cliente quando o proxy o preenche.
-    LIMITACAO CONHECIDA: o proxy do Render so ANEXA ao cabecalho que o cliente
-    mandou, entao quem envia um X-Forwarded-For forjado escolhe a propria chave
-    e contorna o limite. Aceitavel pra um limite de demo (ver docstring do
-    modulo); quem precisar de mais que isso deve limitar na borda."""
+    LIMITACAO CONHECIDA, conferida na demo em 2026-09-26: o proxy do Render so
+    ANEXA ao cabecalho que o cliente mandou (3 requisicoes com X-Forwarded-For
+    forjados diferentes receberam 9, 9, 9 restantes; sem o cabecalho, 9 e 8),
+    entao quem forja o cabecalho escolhe a propria chave e contorna o limite.
+    Navegador nao forja, entao vale pro uso normal; barrar um script de verdade
+    pede limite na borda (Cloudflare). Pegar o ULTIMO IP da lista nao resolve
+    sem saber quantos proxies o Render poe no caminho -- errar isso colocaria
+    todos os visitantes na cota do IP de um proxy."""
     cliente = scope.get("client")
     conexao = cliente[0] if cliente else "desconhecido"
     if not confiar_x_forwarded_for:

@@ -28,11 +28,14 @@ indicador de confiança em cada campo extraído para o usuário saber o que revi
   nomeadas, prontas pra Tabela Dinâmica/Power Query), valores em R$, datas reais e chave
   de 44 dígitos preservada. Num lote, ganha total e gráfico de valor por documento; as
   abas de dados têm listas suspensas e proteção sem senha (filtro continua funcionando).
-- **Segurança e privacidade:** proteção contra injeção de fórmula no Excel;
-  nenhum dado pessoal real no repositório nem no histórico do Git.
-- **297 testes:** 262 rodam por padrão (unitários, regressão sobre um boleto e uma DANFE
+- **Rápido e medido:** cerca de 29 ms por página de DANFE, em escala linear (ver
+  [Desempenho](#desempenho)).
+- **Segurança e privacidade:** proteção contra injeção de fórmula no Excel; limite de uso
+  por IP na demo pública; o servidor não guarda os documentos; nenhum dado pessoal real
+  no repositório nem no histórico do Git.
+- **358 testes:** 319 rodam por padrão (unitários, regressão sobre um boleto e uma DANFE
   reais anonimizados, e um verificador que lê o `.xlsx` gerado como XML bruto pra pegar
-  erro que o Excel rejeitaria mas o openpyxl não veria); mais 26 de interface num
+  erro que o Excel rejeitaria mas o openpyxl não veria); mais 30 de interface num
   navegador real (Playwright) e 9 que validam o Excel contra o SDK oficial da Microsoft.
 - **CI no GitHub Actions** a cada push, e log estruturado por extração (tempo, extrator
   escolhido, campos vazios/de baixa confiança) com id de correlação por requisição.
@@ -110,6 +113,34 @@ nativa** na coluna Confiança (acompanha o texto) e **proteção sem senha**: ca
 totais travados, dados livres, filtro e ordenação funcionando. Com a aba protegida a Tabela
 não cresce; para acrescentar linhas, Revisão > Desproteger planilha.
 
+## Desempenho
+
+Medido na minha máquina de desenvolvimento (Windows, Python 3.12, mediana de 5 execuções),
+com a DANFE sintética dos testes, no modo básico:
+
+| Páginas | Tempo de extração | Por página |
+|---:|---:|---:|
+| 1 | 0,027 s | 27 ms |
+| 10 | 0,289 s | 29 ms |
+| 50 | 1,44 s | 29 ms |
+| 100 | 2,89 s | 29 ms |
+
+A escala é linear: cerca de 29 ms por página, para ler o texto e a posição das palavras e
+reconstruir a tabela de itens. Pela API, de ponta a ponta, somam-se uns 20 ms fixos (1
+página: 0,046 s). OCR é outra ordem de grandeza: cerca de 1,7 s por página escaneada.
+
+**O gargalo real não era CPU, era concorrência.** As rotas eram `async`, mas chamavam
+código síncrono: uma extração de 9 s travava o servidor inteiro, e um `/health` chamado ao
+mesmo tempo chegou a esperar mais de 5 s. Com o trabalho pesado numa thread
+(`run_in_threadpool`), o `/health` responde em menos de 0,5 s durante a mesma extração
+(de 343 a 466 ms no pior momento; o resto é a disputa pelo GIL do Python). Uma requisição
+leve não fica mais presa atrás de uma pesada.
+
+Uma exceção, também medida: gerar o Excel leva 23 ms no uso normal, mas no teto que a API
+aceita (5 documentos com 1000 itens cada) leva 8,5 s, e cresce mais que linearmente. A
+causa são as células mescladas da aba Relatório: o openpyxl confere cada mesclagem contra
+todas as anteriores. Está nos [próximos passos](#limitações-conhecidas-e-próximos-passos).
+
 ## Como rodar (Windows / PowerShell)
 
 Requer Python 3.
@@ -131,6 +162,9 @@ execução), depois basta `uvicorn app.main:app --reload`.
 `ANTHROPIC_API_KEY=` com sua chave e reinicie o servidor. Sem a chave, tudo continua
 funcionando em modo básico.
 
+**Limite de uso:** 10 extrações e 10 exportações por minuto, por IP, valendo também
+localmente. `RATE_LIMIT_POR_MINUTO=0` no `backend\.env` desliga o limite.
+
 ### Testes
 
 ```powershell
@@ -138,7 +172,7 @@ cd backend
 .venv\Scripts\python.exe -m pytest tests -v
 ```
 
-São 262 testes rodando por padrão, entre unitários e de regressão. Os de regressão usam
+São 319 testes rodando por padrão, entre unitários e de regressão. Os de regressão usam
 o texto bruto de um boleto e de trechos de uma DANFE reais, com os dados pessoais
 trocados por fictícios. Eles existem porque os cenários que escrevi à mão não
 reproduziam os bugs que apareciam no documento de verdade.
@@ -147,9 +181,9 @@ O teste de OCR real só roda se o Tesseract e o idioma português estiverem inst
 Sem eles, ele é pulado em vez de falhar. Os outros testes de OCR usam mocks.
 
 Toda vez que dou push (ou abro um PR), o [GitHub Actions](.github/workflows/tests.yml)
-roda esses 262 testes sozinho — é o badge que aparece no topo deste README.
+roda essa suíte sozinho — é o badge que aparece no topo deste README.
 
-Há mais 26 testes de interface, que rodam num Chromium de verdade via Playwright com
+Há mais 30 testes de interface, que rodam num Chromium de verdade via Playwright com
 PDFs fictícios gerados na hora. Eles são opcionais e têm dependências à parte:
 
 ```powershell
@@ -159,7 +193,7 @@ PDFs fictícios gerados na hora. Eles são opcionais e têm dependências à par
 ```
 
 Tem também 9 testes que validam o `.xlsx` exportado contra o SDK oficial da Microsoft
-(Open XML), além do verificador próprio (que já roda nos 262 de sempre). São Windows-only
+(Open XML), além do verificador próprio (que já roda nos 319 de sempre). São Windows-only
 e opcionais, porque baixam esse SDK na primeira vez:
 
 ```powershell
@@ -243,30 +277,62 @@ guarda apenas 15 de precisão, o que a destruiria. CFOP e número do documento t
 esquerda. Os três ficam como texto. Todo texto vindo do PDF é gravado como texto, nunca
 como fórmula.
 
-**Recursos nativos do Excel, com um descarte.** Total do lote, gráfico, listas suspensas e
-proteção entraram; trocar todos os destaques de confiança por formatação condicional não.
-A cor de um campo (Emissor, Valor total…) documenta *como* ele foi extraído ("veio com
-confiança baixa"), não o valor que está na célula agora: se a cor seguisse o valor,
-corrigir o campo apagaria o rastro que o comentário da célula preserva. Só a coluna
-Confiança dos campos adicionais usa regra condicional, porque ali o texto da célula é o
-próprio valor. Um detalhe que o schema não pega: o openpyxl 3.1 não escreve o elemento que
-mantém os eixos do gráfico visíveis, e o Excel 365 os esconde; o verificador do `.xlsx`
-acusa. E a proteção só entrou depois de testar no Excel de verdade que filtro e ordenação
-da Tabela continuam funcionando com a aba protegida.
+**Recursos nativos do Excel, verificados no Excel de verdade.** Total do lote, gráfico,
+listas suspensas e proteção sem senha. Um detalhe que o schema não pega: o openpyxl 3.1
+não escreve o elemento que mantém os eixos do gráfico visíveis, e o Excel 365 os esconde;
+o verificador do `.xlsx` acusa. E a proteção só entrou depois de conferir que filtro e
+ordenação da Tabela continuam funcionando com a aba protegida.
 
 **Frontend servido pelo próprio FastAPI**, em HTML, CSS e JavaScript puros. Um processo
 só em `localhost:8000`, sem CORS e sem CDN externo.
 
-**Trabalho pesado fora do event loop.** Ler o PDF, extrair os campos e montar o Excel são
-síncronos e podem levar segundos — chamados direto dentro de uma rota `async def`, eles
-bloqueariam o servidor inteiro (até o `/health`) enquanto uma única extração roda. Medido
-de propósito antes de corrigir: uma extração de 9s deixava outra pessoa esperando o tempo
-todo. `fastapi.concurrency.run_in_threadpool` resolve.
+**Trabalho pesado fora do event loop.** Ler o PDF, extrair e montar o Excel são síncronos
+e rodam numa thread (`run_in_threadpool`), senão uma rota `async` travaria o servidor
+inteiro. Medido antes de corrigir; os números estão em [Desempenho](#desempenho).
 
 **Log estruturado sem infraestrutura pesada.** Uma linha em JSON por extração (tempo,
 extrator escolhido, campos vazios ou de baixa confiança) e um id por requisição
 (`X-Request-ID` no cabeçalho da resposta, correlacionado à mesma linha do log) — só
 `logging` da biblioteca padrão, sem Sentry nem serviço pago.
+
+**Limite de uso por IP, simples de propósito.** 10 extrações e 10 exportações por minuto,
+por IP. Uma pessoa usando a tela faz 3 ou 4 por minuto; 10 dá folga para quem demonstra
+vários documentos em sequência e ainda segura um script em 600 por hora. Um middleware
+responde 429 antes de ler o upload, com uma mensagem que a tela mostra como está ("Aguarde
+N segundos…"). O contador fica em memória, sem Redis: zera quando a instância reinicia, o
+que basta para uma demo numa instância só.
+
+**O que ficou de fora, e por quê.**
+
+- **Túnel temporário no lugar de hospedagem.** Para gravar um vídeo bastaria um Cloudflare
+  Tunnel apontando para o meu computador, mas a URL morre quando o notebook desliga. O
+  Render foi a hospedagem gratuita mais direta para um serviço Python com Uvicorn: deploy a
+  partir do GitHub com um `render.yaml`, HTTPS e URL permanente. O custo é a hibernação.
+- **Fila de tarefas (Celery, RQ) para a extração.** Uma DANFE comum sai em menos de 0,1 s,
+  e o problema real, travar o servidor, foi resolvido com `run_in_threadpool`. Uma fila
+  pediria um broker (Redis), um processo worker e polling na tela, para um caso que os
+  limites de 20 MB e de uso por IP já contêm. Volta a fazer sentido com lotes grandes ou
+  OCR de documentos longos.
+- **xlsxwriter no lugar do openpyxl.** O xlsxwriter escreve mais rápido e gera gráficos
+  mais completos por padrão, mas não lê arquivos. O openpyxl já estava no projeto (era o
+  motor do pandas, que o exportador usava no começo) e serve tanto para escrever quanto
+  para os testes lerem a planilha de volta. O custo apareceu: os eixos do gráfico que
+  somem no Excel 365 e as mesclagens quadráticas (ver [Desempenho](#desempenho)). O
+  verificador que lê o `.xlsx` como XML bruto existe justamente para não depender da
+  biblioteca que escreveu o arquivo.
+- **Login na demo.** O servidor não guarda documentos nem o que foi extraído (o log
+  registra só metadados, como nome do arquivo e tempo), então não há dado de um usuário
+  para proteger de outro. Login só atrapalharia quem quer testar em 30 segundos. O abuso é
+  contido pelos limites de tamanho e de uso, e a faixa no topo pede que ninguém envie
+  documento real.
+- **Formatação condicional no lugar das cores fixas de confiança.** A cor de um campo
+  (Emissor, Valor total…) documenta *como* ele foi extraído ("veio com confiança baixa"),
+  não o valor que está na célula. Se a cor seguisse o valor, corrigir o campo na planilha
+  apagaria o rastro de que ele foi revisado, que o comentário da célula preserva. Só a
+  coluna Confiança dos campos adicionais usa regra condicional, porque ali o texto da
+  célula é o próprio valor.
+- **Linha de título acima do cabeçalho do Excel.** Power Query e pandas assumem que a
+  linha 1 é o cabeçalho e leriam o título no lugar dos nomes das colunas.
 
 ## Limitações conhecidas e próximos passos
 
@@ -280,11 +346,14 @@ extrator escolhido, campos vazios ou de baixa confiança) e um id por requisiç�
 - As heurísticas foram feitas para o formato comercial brasileiro, com datas em
   dd/mm/aaaa e valores em reais, e validadas com um boleto e uma DANFE reais. Outros
   layouts podem exigir ajustes.
-- Números de tempo de extração (medidos, ainda não publicados aqui) e o gargalo real
-  por trás deles: não é a extração em si, e sim rodar sem limite de concorrência.
-- Rate limit simples (por IP) nos endpoints de upload — a demo pública ainda não tem.
-- Um parágrafo de "decisões descartadas" na seção de Decisões técnicas (o que foi
-  cogitado e por que não entrou), além do que já existe (ex: linha de título mesclada).
+- Gerar o Excel no teto que a API aceita (5000 itens) leva 8,5 s, por causa das células
+  mescladas da aba Relatório. Próximo passo: mesclar sem a checagem quadrática do
+  openpyxl, ou listar no Relatório só os primeiros itens de cada documento.
+- O limite de uso fica em memória e não seria compartilhado entre várias instâncias. E o
+  proxy do Render acrescenta ao cabeçalho `X-Forwarded-For` em vez de substituí-lo
+  (conferido na demo): quem forja esse cabeçalho ganha uma cota nova. Navegador não faz
+  isso, então o limite vale para o uso normal; barrar um script de verdade pede um limite
+  na borda (Cloudflare).
 
 ## Autor
 
@@ -292,5 +361,6 @@ João Pedro Ferreira — [LinkedIn](https://www.linkedin.com/in/joaopedroferreir
 
 ## Status
 
-MVP funcional: upload, extração básica ou via IA, tabela com indicador de confiança,
-correção dos campos e download em Excel.
+Funcional de ponta a ponta e no ar na [demo](https://extrator-docs.onrender.com): upload,
+extração básica ou via IA, confiança por campo, correção na tela e download em Excel.
+Falta a interface para processar vários PDFs de uma vez.

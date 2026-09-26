@@ -41,6 +41,7 @@ backend/app/
                         #   total/grafico de lote, listas suspensas, protecao (openpyxl) -- ver "Excel"
   confianca.py         # confianca geral ("X de Y alta"): a mesma regra da tela, em Python
   logging_config.py    # log estruturado (logger "app") + request-id em contextvar -- ver "Robustez e observabilidade"
+  rate_limit.py        # limite por IP (middleware ASGI, janela deslizante em memoria) -- idem
 backend/tests/
   fixtures/boleto_real_anonimizado.txt     # texto bruto de boleto real (dados trocados)
   fixtures/danfe_real_anonimizado.txt      # COMPOSTO de trechos reais (nao as 84 linhas) -- ver docstring do teste
@@ -61,6 +62,8 @@ backend/tests/
   test_limites.py                       # tetos de tamanho/quantidade (upload, debug, /export-excel)
   test_logging_config.py, test_observabilidade.py # log estruturado, request-id e X-Request-ID
   test_erros_de_leitura.py              # PDF com senha e PDF sem paginas: mensagem propria, nao "corrompido"
+  test_rate_limit.py                    # limite por IP: limitador (relogio falso), IP, middleware, app real, uvicorn real
+  e2e/test_interface_limite.py          #   (e2e) o 429 aparece na tela com a mensagem do backend
   e2e/                                  # testes de interface no navegador (Playwright) -- opt-in, ver "Testes"
     helpers.py                          #   servidor uvicorn temporario + PDFs FICTICIOS gerados por PyMuPDF
     conftest.py, test_interface_confianca.py
@@ -606,7 +609,7 @@ meio de um handler pode deixar a tela "quase certa"; a validação captura
 `pageerror`.
 
 **Como é validado:** testes e2e versionados em `backend/tests/e2e/`
-(Playwright num Chromium real, 26 testes). PDFs **fictícios** gerados por
+(Playwright num Chromium real, 30 testes). PDFs **fictícios** gerados por
 PyMuPDF (`helpers.gerar_pdfs`) — nunca documento real. Cobrem: chips e contagem
 do resumo conferidos contra o JSON da resposta por uma conta independente em
 Python, banner com 2 avisos, campos abertos/fechados por estado, clique e teclado
@@ -843,9 +846,54 @@ Medido antes de corrigir, cada item com teste que reproduz o problema:
   realmente corrompido continua "corrompido", e PDF escaneado de verdade continua
   com o aviso de imagem (testes de falso positivo).
 
-Itens do diagnóstico **ainda não feitos** (adiados de propósito): números de
-tempo de extração publicados, rate limit por IP nos uploads e o parágrafo de
-"decisões descartadas" no README.
+## Limite de uso e desempenho (itens 6 a 8 do diagnóstico)
+
+**Limite por IP** (`app/rate_limit.py`, `tests/test_rate_limit.py`,
+`tests/e2e/test_interface_limite.py`):
+- **10 por minuto, por IP, por grupo**: "extracao" (`/extract-document` e os 3
+  `/debug/*`) e "exportacao" (`/export-excel`), cotas separadas. Critério: um
+  humano faz 3–4 extrações por minuto; 10 dá folga pra quem grava vídeo e limita
+  um script a 600/h. `RATE_LIMIT_POR_MINUTO` (0 desliga; inválido volta ao
+  padrão). Um teste exige que **todo endpoint POST** esteja em `GRUPOS_POR_ROTA`.
+- **Middleware ASGI**, não `Depends`: o 429 sai antes de o upload (até 20 MB)
+  ser lido. Registrado **por dentro** do `RequestIdMiddleware` (o 429 tem
+  `X-Request-ID`). Janela deslizante em memória; recusa não é registrada;
+  memória limitada a 10 mil IPs (LRU); IPv6 conta por /64. Resposta JSON com
+  `detail` em português ("Você atingiu o limite de 10 extrações por minuto da
+  demonstração pública. Aguarde N segundos…"), `Retry-After`, `X-RateLimit-*`.
+  A tela mostra o `detail` do 429 **sem** "Falha ao…" (não é falha); a
+  exportação passou a mostrar o `detail` também (antes só "Erro N").
+- **IP do cliente**: por padrão o da conexão. No Render, o primeiro IP do
+  `X-Forwarded-For`, ligado automaticamente por `RENDER=true` (o Render sempre
+  define): um serviço sem Blueprint ignora os envVars do `render.yaml`, e sem
+  isso todos dividiriam a cota do IP do proxy. `CONFIAR_X_FORWARDED_FOR`
+  explícita tem prioridade. **Conferido na demo (2026-09-26):** o proxy do
+  Render **anexa** ao cabeçalho, não substitui: visitante normal é contado
+  pelo IP real, mas forjar o cabeçalho dá cota nova (limitação documentada no
+  README; barrar script de verdade pede limite na borda).
+- Testes que sobem uvicorn: `helpers.iniciar_servidor()` sobe com o limite
+  **desligado** (as suítes fazem dezenas de POSTs por minuto) e aceita
+  `env_extra`. O uvicorn, por padrão, reescreve o IP do cliente a partir do
+  `X-Forwarded-For` quando a conexão vem de 127.0.0.1 (`--forwarded-allow-ips`):
+  os testes com o cabeçalho usam `FORWARDED_ALLOW_IPS` apontando pra outro
+  endereço, pra testar a nossa lógica e não a do uvicorn. A fixture `tela` do
+  e2e aceita `status_http_esperados` (o Chromium loga 429/500 provocados como
+  erro de console).
+
+**Desempenho** (README, seção "Desempenho"; medido em 2026-09-26, mediana de 5):
+extração de DANFE sintética 1/10/50/100 páginas = 0,027/0,289/1,44/2,89 s
+(~29 ms/página, linear); ponta a ponta via HTTP soma ~20 ms; OCR ~1,7 s/página;
+Excel 23 ms no uso normal. **Achado:** no teto da API (5000 itens) o Excel leva
+**8,5 s**, superlinear, por causa do `merge_cells` do openpyxl na aba Relatório
+(`MultiCellRange.add` confere cada mesclagem contra todas as anteriores: 12,6
+milhões de comparações). Veio da etapa 9 (2,9 s → 8,2 s no teto); a etapa 10
+somou ~3%. **Não corrigido** (mudaria o layout aprovado do Relatório):
+registrado como próximo passo.
+
+**Decisões descartadas** estão no fim de "Decisões técnicas" do README (Render ×
+túnel temporário, fila de tarefas, xlsxwriter, login, formatação condicional,
+linha de título). Na hora do deploy **não** houve comparação formal com
+Railway/Fly.io: o README não afirma uma.
 
 ## Convenções
 
@@ -923,7 +971,7 @@ direto com um `UploadFile` montado na mão, porque `httpx` (TestClient) não
 está nas dependências.
 
 **Testes e2e (interface, opt-in).** `tests/e2e/` roda a interface num Chromium
-real e **não** entra no `pytest tests` normal (que pula os 26 e2e sem subir
+real e **não** entra no `pytest tests` normal (que pula os 30 e2e sem subir
 servidor nem navegador, e não exige Playwright). Dependências separadas:
 
 ```bash
