@@ -117,8 +117,9 @@ def test_export_excel_grande_nao_bloqueia_o_health_check():
     """Mesmo bug, endpoint diferente: /export-excel tambem faz trabalho
     pesado (montar o .xlsx) de forma sincrona. Usa o MAIOR lote que os
     tetos de app/schemas.py (item 2) ainda aceitam -- 5 documentos de 1000
-    itens cada, o teto de TETO_ITENS_TOTAL_DO_LOTE -- que ja demora ~3s
-    (medido), o bastante pra observar /health durante o processamento."""
+    itens cada, o teto de TETO_ITENS_TOTAL_DO_LOTE -- que demora ~8,5 s
+    (medido depois da etapa 10; eram ~3 s antes da aba Relatorio da etapa 9),
+    o bastante pra observar /health durante o processamento."""
     processo, url = helpers.iniciar_servidor()
     try:
         def documento(id_doc):

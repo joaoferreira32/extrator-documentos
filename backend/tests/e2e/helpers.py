@@ -26,15 +26,28 @@ _T = 7  # tamanho da fonte da DANFE
 # ---------- servidor ----------
 
 
-def iniciar_servidor():
-    """Sobe o app numa porta livre e devolve (processo, url_base)."""
+def iniciar_servidor(env_extra: dict[str, str] | None = None):
+    """Sobe o app numa porta livre e devolve (processo, url_base).
+
+    `env_extra` sobrescreve variaveis de ambiente do servidor (ex: o limite de
+    requisicoes). O limite por IP vem DESLIGADO por padrao aqui: as suites e2e e
+    de concorrencia fazem dezenas de requisicoes por minuto do mesmo IP local, e
+    seriam barradas. Os testes do proprio limite ligam de proposito."""
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         porta = s.getsockname()[1]
 
     # Chave vazia: o teste tem que ser sempre modo BASICO, mesmo que a maquina
     # tenha ANTHROPIC_API_KEY (load_dotenv nao sobrescreve variavel ja definida).
-    env = {**os.environ, "ANTHROPIC_API_KEY": "", "PYTHONIOENCODING": "utf-8"}
+    env = {
+        **os.environ,
+        "ANTHROPIC_API_KEY": "",
+        "PYTHONIOENCODING": "utf-8",
+        "RATE_LIMIT_POR_MINUTO": "0",
+        "CONFIAR_X_FORWARDED_FOR": "",
+        "RENDER": "",  # rodando os testes numa maquina do Render, o padrao mudaria
+        **(env_extra or {}),
+    }
     processo = subprocess.Popen(
         [sys.executable, "-m", "uvicorn", "app.main:app", "--port", str(porta), "--log-level", "warning"],
         cwd=BACKEND,

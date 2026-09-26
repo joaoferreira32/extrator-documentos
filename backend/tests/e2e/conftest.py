@@ -88,6 +88,11 @@ class Tela:
         self.url = url
         self.pdfs = pdfs
         self.tmp_path = tmp_path
+        # Status HTTP que o teste PROVOCA de proposito (ex: 429): o Chromium loga
+        # "Failed to load resource ... status of 429" como erro de console, e a
+        # fixture so ignora os status declarados aqui -- qualquer outro continua
+        # reprovando o teste.
+        self.status_http_esperados: set[int] = set()
 
     def extrair(self, nome_pdf):
         """Envia o PDF e devolve o JSON que o backend respondeu."""
@@ -124,8 +129,10 @@ def tela(navegador, servidor, pdfs, tmp_path):
     erros = []
     page.on("console", lambda m: erros.append(m.text) if m.type == "error" else None)
     page.on("pageerror", lambda e: erros.append(str(e)))
-    yield Tela(page, servidor, pdfs, tmp_path)
+    t = Tela(page, servidor, pdfs, tmp_path)
+    yield t
     contexto.close()
     # Erro de JS no meio de um handler pode deixar a tela "quase certa" (ja
     # aconteceu: o bug do blur reentrante) -- entao todo teste vigia o console.
-    assert not erros, f"erros de console/JS durante o teste: {erros}"
+    inesperados = [e for e in erros if not any(f"status of {s}" in e for s in t.status_http_esperados)]
+    assert not inesperados, f"erros de console/JS durante o teste: {inesperados}"

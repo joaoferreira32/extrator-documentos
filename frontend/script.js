@@ -194,15 +194,14 @@ form.addEventListener("submit", async (event) => {
     });
 
     if (!response.ok) {
-      const erro = await response.json().catch(() => null);
-      throw new Error(erro?.detail || `Erro ${response.status}`);
+      throw await erroDaResposta(response);
     }
 
     const resultado = await response.json();
     arquivoDoResultado = arquivoSelecionado.name;
     mostrarResultado(resultado);
   } catch (erro) {
-    mostrarErro(`Falha ao extrair: ${erro.message}`);
+    mostrarErro(erro.limiteAtingido ? erro.message : `Falha ao extrair: ${erro.message}`);
   } finally {
     esconderCarregando();
     btnExtrairEl.disabled = false;
@@ -232,7 +231,7 @@ btnExcelEl.addEventListener("click", async () => {
     });
 
     if (!response.ok) {
-      throw new Error(`Erro ${response.status}`);
+      throw await erroDaResposta(response);
     }
 
     const blob = await response.blob();
@@ -243,11 +242,21 @@ btnExcelEl.addEventListener("click", async () => {
     link.click();
     URL.revokeObjectURL(url);
   } catch (erro) {
-    mostrarErro(`Falha ao gerar Excel: ${erro.message}`);
+    mostrarErro(erro.limiteAtingido ? erro.message : `Falha ao gerar Excel: ${erro.message}`);
   } finally {
     btnExcelEl.disabled = false;
   }
 });
+
+// Erro de uma resposta HTTP recusada: usa o `detail` que o backend mandou. 429 é
+// o limite de uso da demonstração pública — a mensagem do backend já diz quanto
+// esperar, então ela aparece sozinha, sem o prefixo "Falha ao…" (não é uma falha).
+async function erroDaResposta(response) {
+  const corpo = await response.json().catch(() => null);
+  const erro = new Error(corpo?.detail || `Erro ${response.status}`);
+  erro.limiteAtingido = response.status === 429;
+  return erro;
+}
 
 // ---------- Estados visuais ----------
 

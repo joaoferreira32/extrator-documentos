@@ -15,6 +15,7 @@ from app import basic_extractor, config, excel_exporter, extractors, llm_extract
 from app.confianca import CAMPOS_OBRIGATORIOS, vazio
 from app.extractors.danfe import DanfeExtractor
 from app.extractors.danfe_tabela import montar_tabela_itens
+from app.rate_limit import LimiteDeRequisicoesMiddleware
 from app.schemas import ExportarExcelRequest, ExtractionResult
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
@@ -43,6 +44,13 @@ class RequestIdMiddleware(BaseHTTPMiddleware):
         return resposta
 
 
+# Ordem importa: o ULTIMO adicionado fica por fora. O request-id envolve o
+# limite, entao a resposta 429 tambem sai com X-Request-ID.
+app.add_middleware(
+    LimiteDeRequisicoesMiddleware,
+    limite_por_minuto=config.limite_requisicoes_por_minuto(),
+    confiar_x_forwarded_for=config.confiar_x_forwarded_for(),
+)
 app.add_middleware(RequestIdMiddleware)
 
 
