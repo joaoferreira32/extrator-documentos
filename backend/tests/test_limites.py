@@ -10,6 +10,7 @@ httpx (TestClient) nao esta nas dependencias -- chama `main._ler_pdf` e os
 endpoints de debug direto, como test_debug_endpoints.py ja faz.
 """
 import asyncio
+import json
 import os
 import time
 from io import BytesIO
@@ -173,3 +174,52 @@ def test_payload_fabricado_de_100_mil_itens_e_rejeitado_rapido_em_vez_de_travar(
         _documento(itens=[ItemDocumento(descricao=f"Item {i}") for i in range(100_000)])
     duracao = time.perf_counter() - t0
     assert duracao < 5.0, f"rejeitar deveria ser quase instantaneo, levou {duracao:.1f}s"
+
+
+# ---------- a recusa chega na tela como uma frase, nao como lista tecnica ----------
+
+
+def _exportar_via_app(payload: dict):
+    """POST /export-excel pelo app REAL (ASGI), com a validacao do FastAPI."""
+    import json as _json
+
+    from test_rate_limit import _chamar
+
+    corpo = _json.dumps(payload).encode()
+    return asyncio.run(_chamar(main.app, caminho="/export-excel", ip="198.51.100.90",
+                               cabecalhos={"Content-Type": "application/json"}, corpo=corpo))
+
+
+def _doc_json(n_itens: int, numero="1"):
+    return {
+        "arquivo": "x.pdf",
+        "resultado": {"modo_extracao": "basico", "documento": {
+            "tipo_documento": "nota_fiscal", "numero_documento": numero,
+            "itens": [{"descricao": f"i{k}", "valor_total": 1.0} for k in range(n_itens)]}},
+        "corrigidos": {},
+    }
+
+
+def test_danfe_com_mais_itens_que_o_teto_recebe_frase_clara_e_nao_lista_tecnica():
+    """Bug real: a extracao aceita 1001 itens, a exportacao recusa (teto de
+    1000), e a tela mostrava "Falha ao gerar Excel: [object Object]"."""
+    status, _, corpo = _exportar_via_app({"documentos": [_doc_json(TETO_ITENS + 1)]})
+    detail = json.loads(corpo)["detail"]
+    assert status == 422 and isinstance(detail, str)
+    assert detail.startswith(f"O documento 1 tem {TETO_ITENS + 1} itens; o limite para exportar é {TETO_ITENS}.")
+
+
+def test_lote_com_documentos_demais_recebe_frase_clara():
+    status, _, corpo = _exportar_via_app({"documentos": [_doc_json(0, str(i)) for i in range(101)]})
+    assert status == 422 and json.loads(corpo)["detail"].startswith("Há 101 documentos no lote; o limite para exportar é 100.")
+
+
+def test_teto_combinado_do_lote_recebe_a_frase_do_validador_sem_prefixo_tecnico():
+    status, _, corpo = _exportar_via_app({"documentos": [_doc_json(1000, str(i)) for i in range(6)]})
+    detail = json.loads(corpo)["detail"]
+    assert status == 422 and detail.startswith("O lote tem 6000 itens no total") and "Value error" not in detail
+
+
+def test_corpo_invalido_recebe_frase_generica_em_portugues():
+    status, _, corpo = _exportar_via_app({"nada": 1})
+    assert status == 422 and json.loads(corpo)["detail"].startswith("Os dados enviados não puderam ser processados.")

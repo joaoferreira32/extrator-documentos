@@ -265,7 +265,11 @@ btnExcelEl.addEventListener("click", async () => {
 // esperar, então ela aparece sozinha, sem o prefixo "Falha ao…" (não é uma falha).
 async function erroDaResposta(response) {
   const corpo = await response.json().catch(() => null);
-  const erro = new Error(corpo?.detail || `Erro ${response.status}`);
+  // `detail` em lista (validação do FastAPI) virava "[object Object]" na tela.
+  const detalhe = Array.isArray(corpo?.detail)
+    ? "os dados enviados não puderam ser processados."
+    : corpo?.detail;
+  const erro = new Error(detalhe || `Erro ${response.status}`);
   erro.limiteAtingido = response.status === 429;
   return erro;
 }

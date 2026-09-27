@@ -108,3 +108,17 @@ def test_excel_baixado_tem_o_nome_do_pdf(tela):
     with tela.page.expect_download() as download:
         tela.page.click("#btn-excel")
     assert download.value.suggested_filename == "danfe_ok.xlsx"
+
+
+def test_erro_de_validacao_em_lista_nunca_vira_object_object_na_tela(tela):
+    """Defesa na tela: se um 422 chegar com `detail` em lista (formato padrao do
+    FastAPI), a mensagem continua legivel."""
+    tela.status_http_esperados.add(422)
+    tela.extrair("danfe_ok")
+    tela.page.route("**/export-excel", lambda rota: rota.fulfill(
+        status=422, json={"detail": [{"type": "too_long", "loc": ["body", "documentos"], "msg": "List should have at most 100 items"}]}))
+    tela.page.click("#btn-excel")
+    tela.page.wait_for_selector("#error-card:not([hidden])")
+    texto = tela.page.locator("#error-text").inner_text()
+    assert "[object Object]" not in texto
+    assert texto == "Falha ao gerar Excel: os dados enviados não puderam ser processados."

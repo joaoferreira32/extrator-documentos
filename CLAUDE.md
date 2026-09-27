@@ -64,6 +64,9 @@ backend/tests/
   test_erros_de_leitura.py              # PDF com senha e PDF sem paginas: mensagem propria, nao "corrompido"
   test_rate_limit.py                    # limite por IP: limitador (relogio falso), IP, middleware, app real, uvicorn real
   e2e/test_interface_limite.py          #   (e2e) o 429 aparece na tela com a mensagem do backend
+  test_textos_para_o_usuario.py         # le o codigo (AST): toda mensagem pra tela/Excel com acento e sem "--"
+  test_consistencia_tela_excel.py       # tela e Excel tratam os mesmos campos adicionais como dinheiro
+  e2e/test_interface_consistencia.py    #   (e2e) mesmo valor, mesma formatacao na tela e no .xlsx; nome do Excel baixado
   e2e/                                  # testes de interface no navegador (Playwright) -- opt-in, ver "Testes"
     helpers.py                          #   servidor uvicorn temporario + PDFs FICTICIOS gerados por PyMuPDF
     conftest.py, test_interface_confianca.py
@@ -553,10 +556,18 @@ usuário desfaz a edição, o campo volta sozinho ao estado original.
 **Exibição formatada — só na tela; o valor interno não muda.** O JSON bruto e o
 Excel continuam com o valor original (o `.xlsx` sai de `ultimoResultado`, que
 nunca recebe o texto formatado):
-- **Itens em pt-BR** (`215.03` → `215,03`): quantidade com até 4 casas, valor
-  unitário 2–4 (preço unitário pode ter 4 casas), valor total 2. O `valor_total`
-  do documento também é pt-BR (2 casas). Valor que não virou número fica como
-  veio. No Excel os números continuam numéricos (somáveis).
+- **Igual ao Excel** (revisão final; `tests/e2e/test_interface_consistencia.py`):
+  dinheiro com **"R$"** e em pt-BR (`R$ 215,03`; quantidade sem "R$", até 4
+  casas; valor unitário 2–4; total 2) no `valor_total`, nos itens e nos 4 campos
+  adicionais monetários (`CAMPOS_ADICIONAIS_MONETARIOS`, espelho de
+  `excel_exporter.CAMPOS_MONETARIOS`, comparado por `tests/test_consistencia_
+  tela_excel.py`); **datas em dd/mm/aaaa** (`formatarData`, mesmas regras de
+  `_para_data`: ISO do modo IA e "1/5/2026" digitado viram "01/05/2026"; dia
+  inexistente fica como veio). Só **exibição**: o editor mostra o valor cru e o
+  JSON/Excel recebem o valor de sempre. Valor que não virou número fica como
+  veio. No Excel os números continuam numéricos (somáveis). Diferença que
+  continua **de propósito**: a coluna Tipo da aba Documentos guarda o valor
+  interno.
 - **Tipo do documento com rótulo amigável** (`ROTULOS_TIPO`): "Boleto", "Nota
   fiscal", "Pedido de compra", "Relatório", "Desconhecido" — na tela e nas
   opções do `<select>`. O `value` interno (`nota_fiscal`...) é o que vai pro JSON
@@ -591,7 +602,11 @@ opcional — aparece `—` sem destaque e não entra no resumo.
   confiança" só porque o usuário mexeu. Opcional vazio fica fora de tudo.
 - **Modo IA** (`confiancas == {}`): sem chips de confiança nem "X de Y"; nota
   "Confiança por campo indisponível no modo IA"; vazios e corrigidos continuam
-  aparecendo e a edição continua funcionando.
+  aparecendo e a edição continua funcionando. **Bug achado na demo:** o modo
+  **básico** também pode vir sem confiança (PDF escaneado sem OCR), e a tela
+  mostrava "Modo: Básico" junto da nota "modo IA"; a nota só aparece com
+  `modo_extracao == "ia"`.
+- O `.xlsx` baixado leva o nome do PDF (`nomeDoExcel`: `danfe.pdf` → `danfe.xlsx`).
 
 **Banner de avisos:** largura total no topo do card de resultado
 (`role="status"`, "Atenção"). Lista `resultado.avisos` (uma linha por aviso);
@@ -609,7 +624,7 @@ meio de um handler pode deixar a tela "quase certa"; a validação captura
 `pageerror`.
 
 **Como é validado:** testes e2e versionados em `backend/tests/e2e/`
-(Playwright num Chromium real, 30 testes). PDFs **fictícios** gerados por
+(Playwright num Chromium real, 37 testes). PDFs **fictícios** gerados por
 PyMuPDF (`helpers.gerar_pdfs`) — nunca documento real. Cobrem: chips e contagem
 do resumo conferidos contra o JSON da resposta por uma conta independente em
 Python, banner com 2 avisos, campos abertos/fechados por estado, clique e teclado
@@ -895,6 +910,41 @@ túnel temporário, fila de tarefas, xlsxwriter, login, formatação condicional
 linha de título). Na hora do deploy **não** houve comparação formal com
 Railway/Fly.io: o README não afirma uma.
 
+## Revisão final antes de divulgar (2026-09-26/27)
+
+- **Textos para o usuário**: acento e travessão em todos os avisos/erros (antes
+  "nao fecham", "-- confira"; dinheiro do aviso em "R$ 215.03"). Erros escritos
+  pra quem não é técnico (tamanho em MB, "não é um PDF"); o aviso de PDF
+  escaneado não manda mais "ver o README" (o visitante da demo não instala
+  nada). `tests/test_textos_para_o_usuario.py` lê o código (AST) e barra
+  mensagem nova sem acento. **Não** mexer nos rótulos que o extrator procura no
+  PDF (ficam sem acento de propósito) nem no prompt do modo IA.
+- **Demo** (fluxo completo com Playwright na URL pública, PDFs fictícios):
+  extração < 0,5 s, correção chega no Excel com comentário do valor original.
+  Acordar da hibernação mostra a tela "Application loading" do Render (8 s na
+  medição) e ela **recarrega a página** quando o app sobe: um arquivo escolhido
+  nesse meio-tempo se perde. Erros testados na demo: não-PDF, corrompido, com
+  senha, 25 MB, escaneado (a demo **não tem Tesseract**).
+- **Dados pessoais — PENDENTE, depende do usuário no GitHub:** o histórico
+  atual está limpo (todo blob de todo commit varrido; os screenshots antigos
+  conferidos a olho; o único valor real que a limpeza removeu não aparece em
+  nenhum commit). **Mas o GitHub continua servindo os commits de ANTES da
+  reescrita** pelo SHA (inclusive o curto), e a API pública de eventos/atividade
+  lista esses SHAs (force-push). Neles: Nosso Número e número do documento
+  reais do boleto e a **chave de acesso real da DANFE** (consultável na
+  SEFAZ). Correção: repositório privado já; definitiva: apagar e recriar o
+  repositório no GitHub e dar push do histórico limpo (0 forks; o Render
+  precisa ser religado ao repositório novo), ou pedir ao suporte do GitHub a
+  remoção dos objetos. Conferir depois: os SHAs antigos têm que dar 404.
+- **422 legível** (`main._erro_de_validacao`): uma DANFE com mais de 1000 itens
+  é extraída normalmente (o schema não é revalidado ali), mas a exportação
+  recusa (`TETO_ITENS`), e a tela mostrava "Falha ao gerar Excel: [object
+  Object]" (o `detail` padrão do FastAPI é uma lista). Agora o 422 vem numa
+  frase ("O documento 1 tem 1001 itens; o limite para exportar é 1000...") e a
+  tela trata `detail` em lista por defesa. Os tetos continuam os mesmos.
+- Resíduo aceito: o telefone fictício do destinatário na fixture da DANFE
+  manteve o DDD 19 e a UF SP (região, não identifica ninguém).
+
 ## Convenções
 
 - Chave de API sempre via variável de ambiente (`ANTHROPIC_API_KEY` em
@@ -971,7 +1021,7 @@ direto com um `UploadFile` montado na mão, porque `httpx` (TestClient) não
 está nas dependências.
 
 **Testes e2e (interface, opt-in).** `tests/e2e/` roda a interface num Chromium
-real e **não** entra no `pytest tests` normal (que pula os 30 e2e sem subir
+real e **não** entra no `pytest tests` normal (que pula os 37 e2e sem subir
 servidor nem navegador, e não exige Playwright). Dependências separadas:
 
 ```bash

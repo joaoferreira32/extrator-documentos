@@ -6,7 +6,8 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, UploadFile
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import StreamingResponse
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
@@ -359,6 +360,43 @@ async def debug_extractor_input(file: UploadFile):
     sem chamar a IA. Ver CLAUDE.md ("Diagnosticando um PDF real")."""
     resultado_texto = await _ler_pdf(file)
     return await run_in_threadpool(montar_debug_entrada_do_extrator, resultado_texto)
+
+
+_NOMES_LISTAS = {
+    "itens": "itens",
+    "campos_adicionais": "campos adicionais",
+    "avisos": "avisos",
+    "documentos": "documentos no lote",
+}
+
+
+def _explicar_erro_de_validacao(erros: list[dict]) -> str:
+    """Traduz o 422 do FastAPI (uma lista tecnica, em ingles) para UMA frase que
+    a tela mostra. Bug real: a tela exibia "Falha ao gerar Excel: [object Object]"
+    ao exportar uma DANFE com mais de 1000 itens -- a extracao aceita, o teto da
+    exportacao (app/schemas.py) recusa, e o `detail` vinha como lista."""
+    for erro in erros:
+        local = [p for p in erro.get("loc", ()) if p != "body"]
+        if erro.get("type") == "too_long" and local:
+            nome = _NOMES_LISTAS.get(str(local[-1]), str(local[-1]))
+            ctx = erro.get("ctx") or {}
+            onde = ""
+            if len(local) >= 3 and local[0] == "documentos" and isinstance(local[1], int):
+                onde = f"O documento {local[1] + 1} tem" if nome != "documentos no lote" else "Há"
+            else:
+                onde = "Há"
+            return (
+                f"{onde} {ctx.get('actual_length', 'mais')} {nome}; o limite para exportar é "
+                f"{ctx.get('max_length')}. Divida o documento ou o lote em partes menores."
+            )
+        if erro.get("type") == "value_error":
+            return str(erro.get("msg", "")).removeprefix("Value error, ")
+    return "Os dados enviados não puderam ser processados. Extraia o documento de novo e tente outra vez."
+
+
+@app.exception_handler(RequestValidationError)
+async def _erro_de_validacao(_request: Request, exc: RequestValidationError):
+    return JSONResponse(status_code=422, content={"detail": _explicar_erro_de_validacao(exc.errors())})
 
 
 @app.post("/export-excel")

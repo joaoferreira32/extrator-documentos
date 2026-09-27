@@ -3,8 +3,9 @@
 [![Testes](https://github.com/joaoferreira32/extrator-documentos/actions/workflows/tests.yml/badge.svg)](https://github.com/joaoferreira32/extrator-documentos/actions/workflows/tests.yml)
 
 **[Demo online](https://extrator-docs.onrender.com)** — hospedada no plano gratuito
-do Render: se ninguém acessou nos últimos minutos, o serviço hiberna e a primeira
-visita pode demorar ~50s para responder enquanto ele acorda.
+do Render: se ninguém acessou nos últimos minutos, o serviço hiberna, e a primeira
+visita mostra uma tela de espera do Render por alguns segundos (até cerca de 1 minuto)
+enquanto ele acorda.
 
 Extrai automaticamente os dados de **notas fiscais (DANFE)** e **boletos bancários**
 em PDF — emissor, destinatário, valores, datas, itens — e gera uma planilha Excel
@@ -33,9 +34,9 @@ indicador de confiança em cada campo extraído para o usuário saber o que revi
 - **Segurança e privacidade:** proteção contra injeção de fórmula no Excel; limite de uso
   por IP na demo pública; o servidor não guarda os documentos; nenhum dado pessoal real
   no repositório nem no histórico do Git.
-- **358 testes:** 319 rodam por padrão (unitários, regressão sobre um boleto e uma DANFE
+- **388 testes:** 342 rodam por padrão (unitários, regressão sobre um boleto e uma DANFE
   reais anonimizados, e um verificador que lê o `.xlsx` gerado como XML bruto pra pegar
-  erro que o Excel rejeitaria mas o openpyxl não veria); mais 30 de interface num
+  erro que o Excel rejeitaria mas o openpyxl não veria); mais 37 de interface num
   navegador real (Playwright) e 9 que validam o Excel contra o SDK oficial da Microsoft.
 - **CI no GitHub Actions** a cada push, e log estruturado por extração (tempo, extrator
   escolhido, campos vazios/de baixa confiança) com id de correlação por requisição.
@@ -172,7 +173,7 @@ cd backend
 .venv\Scripts\python.exe -m pytest tests -v
 ```
 
-São 319 testes rodando por padrão, entre unitários e de regressão. Os de regressão usam
+São 342 testes rodando por padrão, entre unitários e de regressão. Os de regressão usam
 o texto bruto de um boleto e de trechos de uma DANFE reais, com os dados pessoais
 trocados por fictícios. Eles existem porque os cenários que escrevi à mão não
 reproduziam os bugs que apareciam no documento de verdade.
@@ -183,7 +184,7 @@ Sem eles, ele é pulado em vez de falhar. Os outros testes de OCR usam mocks.
 Toda vez que dou push (ou abro um PR), o [GitHub Actions](.github/workflows/tests.yml)
 roda essa suíte sozinho — é o badge que aparece no topo deste README.
 
-Há mais 30 testes de interface, que rodam num Chromium de verdade via Playwright com
+Há mais 37 testes de interface, que rodam num Chromium de verdade via Playwright com
 PDFs fictícios gerados na hora. Eles são opcionais e têm dependências à parte:
 
 ```powershell
@@ -193,7 +194,7 @@ PDFs fictícios gerados na hora. Eles são opcionais e têm dependências à par
 ```
 
 Tem também 9 testes que validam o `.xlsx` exportado contra o SDK oficial da Microsoft
-(Open XML), além do verificador próprio (que já roda nos 319 de sempre). São Windows-only
+(Open XML), além do verificador próprio (que já roda nos 342 de sempre). São Windows-only
 e opcionais, porque baixam esse SDK na primeira vez:
 
 ```powershell
@@ -338,7 +339,8 @@ que basta para uma demo numa instância só.
 
 - Só a DANFE tem extração de itens no modo básico. Boleto e documentos genéricos ficam
   com `itens` vazio, e o modo IA cobre esses casos.
-- As limitações do OCR estão na seção [OCR](#ocr-opcional).
+- As limitações do OCR estão na seção [OCR](#ocr-opcional). A demo pública não tem o
+  Tesseract instalado: um PDF escaneado recebe um aviso pedindo um PDF com texto digital.
 - Na DANFE, série, natureza da operação, data de saída e inscrição estadual do emitente
   ainda não são extraídas.
 - Não existe interface para processar vários PDFs de uma vez. A tela envia um documento
