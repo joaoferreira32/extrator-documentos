@@ -276,6 +276,35 @@ def test_chave_de_acesso_em_blocos_de_4_com_valor_intacto(tela):
 # ---------- modo IA, acessibilidade, contraste, celular ----------
 
 
+def test_modo_basico_sem_confianca_nao_fala_em_modo_ia(tela):
+    """Bug achado na demo publica: PDF escaneado (sem OCR no servidor) volta no
+    modo BASICO sem confiancas, e a tela mostrava "Modo: Basico" ao lado de
+    "Confianca por campo indisponivel no modo IA"."""
+    aviso = "Este PDF parece ser uma imagem escaneada, e a leitura de imagem (OCR) não está disponível neste servidor."
+    resposta = {
+        "modo_extracao": "basico", "origem_texto": "digital", "confiancas": {}, "avisos": [aviso], "aviso": aviso,
+        "documento": {"tipo_documento": "desconhecido", "numero_documento": None, "data_emissao": None,
+                      "data_vencimento": None, "emissor": None, "destinatario": None, "valor_total": None,
+                      "itens": [], "campos_adicionais": []},
+    }
+    tela.page.goto(tela.url)
+    tela.page.route("**/extract-document", lambda rota: rota.fulfill(json=resposta))
+    tela.page.set_input_files("#file-input", str(tela.pdfs["generico"]))
+    tela.page.click("#btn-extrair")
+    tela.page.wait_for_selector("#resultado:not([hidden])")
+
+    assert tela.page.locator("#badge-modo").inner_text().lower() == "modo: básico"
+    assert tela.page.locator("#nota-confianca").is_hidden()
+    assert "modo IA" not in tela.page.locator("#resultado").inner_text()
+    assert aviso in tela.page.locator("#banner-avisos").inner_text()  # quem explica e o banner
+
+
+def test_titulo_da_aba_e_o_mesmo_nome_da_pagina(tela):
+    tela.page.goto(tela.url)
+    assert tela.page.title() == tela.page.locator("h1").inner_text() == "Extrator Inteligente de Documentos"
+
+
+
 def test_modo_ia_sem_chips_de_confianca_mas_vazios_e_edicao_funcionam(tela):
     resposta_ia = {
         "modo_extracao": "ia", "origem_texto": "digital", "confiancas": {}, "avisos": [], "aviso": None,

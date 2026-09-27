@@ -250,7 +250,7 @@ btnExcelEl.addEventListener("click", async () => {
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.download = "documento_extraido.xlsx";
+    link.download = nomeDoExcel(arquivoDoResultado);
     link.click();
     URL.revokeObjectURL(url);
   } catch (erro) {
@@ -268,6 +268,16 @@ async function erroDaResposta(response) {
   const erro = new Error(corpo?.detail || `Erro ${response.status}`);
   erro.limiteAtingido = response.status === 429;
   return erro;
+}
+
+// "danfe_exemplo.pdf" -> "danfe_exemplo.xlsx". Tira caracteres que o sistema de
+// arquivos recusa; sem nome aproveitável, cai no nome genérico.
+function nomeDoExcel(nomePdf) {
+  const base = String(nomePdf || "")
+    .replace(/\.pdf$/i, "")
+    .replace(/[\\/:*?"<>|\u0000-\u001f]/g, "_")
+    .trim();
+  return `${base || "documento_extraido"}.xlsx`;
 }
 
 // ---------- Estados visuais ----------
@@ -312,7 +322,10 @@ function mostrarResultado(resultado) {
   atualizarResumo();
   atualizarJsonBruto();
 
-  notaConfiancaEl.hidden = temConfiancas;
+  // A nota fala do modo IA: no modo básico sem confiança (PDF sem texto legível,
+  // ex.: escaneado sem OCR) ela diria "modo IA" ao lado do badge "Modo: Básico".
+  // Nesse caso o banner de avisos já explica o que aconteceu.
+  notaConfiancaEl.hidden = temConfiancas || resultado.modo_extracao !== "ia";
   legendaConfiancaEl.hidden = !temConfiancas;
   resultadoEl.hidden = false;
 }

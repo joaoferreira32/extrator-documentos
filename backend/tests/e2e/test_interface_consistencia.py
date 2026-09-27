@@ -100,3 +100,11 @@ def test_abrir_e_confirmar_sem_mudar_nao_vira_correcao_nos_campos_formatados(tel
     assert tela.page.locator(".chip-corrigido").count() == 0
     doc = tela.json_bruto()["documento"]
     assert doc["data_emissao"] == "2026-04-15" and doc["campos_adicionais"][0]["valor"] == "1234,50"
+
+
+def test_excel_baixado_tem_o_nome_do_pdf(tela):
+    """Antes saia sempre "documento_extraido.xlsx", qualquer que fosse o PDF."""
+    tela.extrair("danfe_ok")
+    with tela.page.expect_download() as download:
+        tela.page.click("#btn-excel")
+    assert download.value.suggested_filename == "danfe_ok.xlsx"
