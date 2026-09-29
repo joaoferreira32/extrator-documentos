@@ -925,7 +925,7 @@ Railway/Fly.io: o README não afirma uma.
   medição) e ela **recarrega a página** quando o app sobe: um arquivo escolhido
   nesse meio-tempo se perde. Erros testados na demo: não-PDF, corrompido, com
   senha, 25 MB, escaneado (a demo **não tem Tesseract**).
-- **Dados pessoais — PENDENTE, depende do usuário no GitHub:** o histórico
+- **Dados pessoais — RESOLVIDO em 2026-09-29 (o repositório foi recriado):** o histórico
   atual está limpo (todo blob de todo commit varrido; os screenshots antigos
   conferidos a olho; o único valor real que a limpeza removeu não aparece em
   nenhum commit). **Mas o GitHub continua servindo os commits de ANTES da
@@ -935,7 +935,14 @@ Railway/Fly.io: o README não afirma uma.
   SEFAZ). Correção: repositório privado já; definitiva: apagar e recriar o
   repositório no GitHub e dar push do histórico limpo (0 forks; o Render
   precisa ser religado ao repositório novo), ou pedir ao suporte do GitHub a
-  remoção dos objetos. Conferir depois: os SHAs antigos têm que dar 404.
+  remoção dos objetos. **Feito:** o usuário apagou e recriou o repositório
+  (mesma URL, vazio, privado) e o histórico limpo foi enviado. Verificado com a
+  credencial do git: os 13 commits de antes da reescrita **não** podem mais ser
+  buscados pelo SHA (`git fetch <url> <sha>` falha), com controle positivo (um
+  commit atual pedido do mesmo jeito vem). Ao tornar o repositório público de
+  novo, conferir também pela web (URL do commit antigo = 404) e que a API de
+  eventos não lista SHA antigo. Nunca dar push de um clone feito a partir do
+  `pre-limpeza.bundle`.
 - **422 legível** (`main._erro_de_validacao`): uma DANFE com mais de 1000 itens
   é extraída normalmente (o schema não é revalidado ali), mas a exportação
   recusa (`TETO_ITENS`), e a tela mostrava "Falha ao gerar Excel: [object
